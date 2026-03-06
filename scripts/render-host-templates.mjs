@@ -8,9 +8,10 @@ function parseArgs(argv) {
     if (arg === '--host') out.host = argv[++i];
     else if (arg === '--target') out.target = argv[++i];
     else if (arg === '--templates') out.templates = argv[++i];
+    else if (arg === '--repo-home') out.repoHome = true;
   }
-  if (!out.host || !out.target) {
-    throw new Error('Usage: node scripts/render-host-templates.mjs --host <host> --target <dir> [--templates <dir>]');
+  if (!out.target || (!out.repoHome && !out.host)) {
+    throw new Error('Usage: node scripts/render-host-templates.mjs --host <host> --target <dir> [--templates <dir>] | --repo-home --target <dir> [--templates <dir>]');
   }
   return out;
 }
@@ -202,43 +203,49 @@ function renderFile(templatePath, outputPath, variables) {
   fs.writeFileSync(outputPath, rendered, 'utf8');
 }
 
-const { host, target, templates } = parseArgs(process.argv);
-const hostDisplay = titleCase(host);
-const skillCommand = `${host}-to-im`;
-const runtimeHome = `~/.${skillCommand}`;
-const verify = getVerifyInstallation(host, skillCommand, runtimeHome);
-const prerequisites = getPrerequisites(host);
-const runtimeNotes = getRuntimeNotes(host);
-const configRuntimeNotes = getConfigRuntimeNotes(host);
-const installLead = getInstallLead(host);
+const { host, target, templates, repoHome } = parseArgs(process.argv);
 const templateDir = templates || path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'templates');
 
-const variables = {
-  HOST: host,
-  HOST_DISPLAY: hostDisplay,
-  SKILL_COMMAND: skillCommand,
-  RUNTIME_HOME: runtimeHome,
-  HOST_SKILLS_DIR: getHostSkillsDir(host),
-  VERIFY_INSTALLATION_EN: verify.en,
-  VERIFY_INSTALLATION_ZH: verify.zh,
-  PREREQUISITES_EN: prerequisites.en,
-  PREREQUISITES_ZH: prerequisites.zh,
-  RUNTIME_NOTES_EN: runtimeNotes,
-  CONFIG_RUNTIME_NOTES: configRuntimeNotes,
-  INSTALL_LEAD_EN: installLead.en,
-  INSTALL_LEAD_ZH: installLead.zh,
-};
+if (repoHome) {
+  renderFile(path.join(templateDir, 'README.repo.md.tmpl'), path.join(target, 'README.md'), {});
+  renderFile(path.join(templateDir, 'README_CN.repo.md.tmpl'), path.join(target, 'README_CN.md'), {});
+} else {
+  const hostDisplay = titleCase(host);
+  const skillCommand = `${host}-to-im`;
+  const runtimeHome = `~/.${skillCommand}`;
+  const verify = getVerifyInstallation(host, skillCommand, runtimeHome);
+  const prerequisites = getPrerequisites(host);
+  const runtimeNotes = getRuntimeNotes(host);
+  const configRuntimeNotes = getConfigRuntimeNotes(host);
+  const installLead = getInstallLead(host);
 
-const files = [
-  'SKILL.md',
-  'README.md',
-  'README_CN.md',
-  'SECURITY.md',
-  'config.env.example',
-  path.join('references', 'usage.md'),
-  path.join('references', 'troubleshooting.md'),
-];
+  const variables = {
+    HOST: host,
+    HOST_DISPLAY: hostDisplay,
+    SKILL_COMMAND: skillCommand,
+    RUNTIME_HOME: runtimeHome,
+    HOST_SKILLS_DIR: getHostSkillsDir(host),
+    VERIFY_INSTALLATION_EN: verify.en,
+    VERIFY_INSTALLATION_ZH: verify.zh,
+    PREREQUISITES_EN: prerequisites.en,
+    PREREQUISITES_ZH: prerequisites.zh,
+    RUNTIME_NOTES_EN: runtimeNotes,
+    CONFIG_RUNTIME_NOTES: configRuntimeNotes,
+    INSTALL_LEAD_EN: installLead.en,
+    INSTALL_LEAD_ZH: installLead.zh,
+  };
 
-for (const relative of files) {
-  renderFile(path.join(templateDir, `${relative}.tmpl`), path.join(target, relative), variables);
+  const files = [
+    'SKILL.md',
+    'README.md',
+    'README_CN.md',
+    'SECURITY.md',
+    'config.env.example',
+    path.join('references', 'usage.md'),
+    path.join('references', 'troubleshooting.md'),
+  ];
+
+  for (const relative of files) {
+    renderFile(path.join(templateDir, `${relative}.tmpl`), path.join(target, relative), variables);
+  }
 }
