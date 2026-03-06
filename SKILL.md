@@ -94,7 +94,7 @@ Ask for runtime, default working directory, model, and mode:
   - `codex` — uses OpenAI Codex SDK (requires `codex` CLI; auth via `codex auth login` or `OPENAI_API_KEY`)
   - `auto` — tries Claude first, falls back to Codex if Claude CLI not found
 - **Working Directory**: default `$CWD`
-- **Model**: When runtime is `claude` or `auto`: `claude-sonnet-4-20250514` (default), `claude-opus-4-6`, `claude-haiku-4-5-20251001`. When runtime is `codex`: user can specify any model supported by their Codex setup.
+- **Model** (optional): Leave blank to inherit the runtime's own default model. If the user wants to override, ask them to enter a model name. Do NOT hardcode or suggest specific model names — the available models change over time.
 - **Mode**: `code` (default), `plan`, `ask`
 
 **Step 4 — Write config and validate**
