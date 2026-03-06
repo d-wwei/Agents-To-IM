@@ -6,7 +6,8 @@
  */
 
 import fs from 'node:fs';
-import { execSync } from 'node:child_process';
+import path from 'node:path';
+import { execSync, execFileSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { LLMProvider, StreamChatParams, FileAttachment } from 'claude-to-im/src/lib/bridge/host.js';
@@ -276,6 +277,36 @@ function findAllInPath(): string[] {
 }
 
 /**
+ * Return the path to the SDK's bundled cli.js, which can always be run via `node`.
+ * Used as a fallback when the native binary cannot be spawned.
+ */
+function sdkCliFallback(): string | undefined {
+  try {
+    // The SDK is an external module — resolve its location then find cli.js next to it.
+    const sdkMain = require.resolve('@anthropic-ai/claude-agent-sdk');
+    const candidate = path.join(path.dirname(sdkMain), 'cli.js');
+    if (isExecutable(candidate)) return candidate;
+  } catch {
+    // SDK not resolvable (unusual)
+  }
+  return undefined;
+}
+
+/**
+ * Verify a native binary can actually be spawned in the current process context.
+ * File-existence checks (X_OK) are insufficient — in some environments (e.g. macOS
+ * launchd agents) an executable that exists on disk still fails to spawn with ENOENT.
+ */
+function canSpawn(binaryPath: string): boolean {
+  try {
+    execFileSync(binaryPath, ['--version'], { timeout: 3000, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the path to the `claude` CLI executable.
  *
  * Priority:
@@ -285,6 +316,8 @@ function findAllInPath(): string[] {
  *
  * This multi-candidate approach handles the common scenario where
  * nvm/npm puts an old 1.x claude in PATH before the native 2.x CLI.
+ * For native binaries, validates that spawn actually works and falls back to the
+ * SDK's bundled cli.js if needed (e.g. launchd sandbox restrictions).
  */
 export function resolveClaudeCliPath(): string | undefined {
   // 1. Explicit env var — trust the user
@@ -318,12 +351,18 @@ export function resolveClaudeCliPath(): string | undefined {
   }
 
   // 3. Pick the first compatible candidate
+  let spawnFallback: string | undefined;
   let firstUnverifiable: string | undefined;
   for (const p of allCandidates) {
     if (!isExecutable(p)) continue;
 
     const compat = checkCliCompatibility(p);
     if (compat?.compatible) {
+      if (!canSpawn(p)) {
+        console.warn(`[llm-provider] '${p}' is compatible but cannot be spawned`);
+        spawnFallback ||= sdkCliFallback();
+        continue;
+      }
       if (p !== pathCandidates[0] && pathCandidates.length > 0) {
         console.log(`[llm-provider] Skipping incompatible CLI at "${pathCandidates[0]}", using "${p}" (${compat.version})`);
       }
@@ -341,7 +380,7 @@ export function resolveClaudeCliPath(): string | undefined {
 
   // Only fall back to an unverifiable executable — never to a known-old one.
   // This avoids silently using a 1.x CLI that will crash on first message.
-  return firstUnverifiable;
+  return spawnFallback ?? firstUnverifiable;
 }
 
 // ── Multi-modal prompt builder ──
