@@ -82,7 +82,7 @@ Ask which channels to enable (telegram, discord, feishu). Accept comma-separated
 
 For each enabled channel, read `SKILL_DIR/references/setup-guides.md` and present the relevant platform guide to the user. Collect one credential at a time:
 
-- **Telegram**: Bot Token → confirm (masked) → Allowed User IDs (optional)
+- **Telegram**: Bot Token → confirm (masked) → Chat ID (see guide for how to get it) → confirm → Allowed User IDs (optional). **Important:** At least one of Chat ID or Allowed User IDs must be set, otherwise the bot will reject all messages.
 - **Discord**: Bot Token → confirm (masked) → Allowed User IDs (optional) → Allowed Channel IDs (optional) → Allowed Guild IDs (optional)
 - **Feishu**: App ID → confirm → App Secret → confirm (masked) → Domain (optional) → Allowed User IDs (optional). Guide through all 4 steps (A: batch permissions, B: enable bot, C: events & callbacks with long connection, D: publish version).
 

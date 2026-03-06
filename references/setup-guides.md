@@ -21,6 +21,18 @@ Detailed step-by-step guides for each IM platform. Referenced by the `setup` and
 
 Token format: `数字:字母数字字符串` (e.g. `7823456789:AAF-xxx...xxx`)
 
+### Chat ID
+
+**How to get your Telegram Chat ID:**
+1. Start a chat with your bot (search for the bot's username and click **Start**)
+2. Send any message to the bot (e.g. "hello")
+3. Open this URL in your browser (replace `YOUR_BOT_TOKEN` with your actual bot token):
+   `https://api.telegram.org/botYOUR_BOT_TOKEN/getUpdates`
+4. In the JSON response, find `"chat":{"id":123456789,...}` — that number is your Chat ID
+5. For group chats, the Chat ID is a negative number (e.g. `-1001234567890`)
+
+**Why this matters:** The bot uses Chat ID for authorization. If neither Chat ID nor Allowed User IDs are configured, the bot will reject all incoming messages.
+
 ### Allowed User IDs (optional)
 
 **How to find your Telegram User ID:**
