@@ -28,15 +28,21 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ── Paths ──
-$CtiHome    = if ($env:CTI_HOME) { $env:CTI_HOME } else { Join-Path $env:USERPROFILE '.claude-to-im' }
 $SkillDir   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$hostName   = if ($env:CTI_HOST) { $env:CTI_HOST.ToLower() } elseif ((Split-Path $SkillDir -Leaf) -match '^(.*)-to-im$') { $matches[1].ToLower() } else { 'claude' }
+$skillCommand = if ($env:CTI_SKILL_COMMAND) { $env:CTI_SKILL_COMMAND } else { "$hostName-to-im" }
+$CtiHome    = if ($env:CTI_HOME) { $env:CTI_HOME } else { Join-Path $env:USERPROFILE ".$skillCommand" }
 $RuntimeDir = Join-Path $CtiHome 'runtime'
 $PidFile    = Join-Path $RuntimeDir 'bridge.pid'
 $StatusFile = Join-Path $RuntimeDir 'status.json'
 $LogFile    = Join-Path $CtiHome 'logs' 'bridge.log'
 $DaemonMjs  = Join-Path $SkillDir 'dist' 'daemon.mjs'
 
-$ServiceName = 'ClaudeToIMBridge'
+$ServiceName = if ($hostName -split '[-_]' | Measure-Object | Select-Object -ExpandProperty Count) {
+  (($hostName -split '[-_]') | ForEach-Object { if ($_) { $_.Substring(0,1).ToUpper() + $_.Substring(1) } }) -join '' + 'ToIMBridge'
+} else {
+  'ClaudeToIMBridge'
+}
 
 # ── Helpers ──
 
@@ -135,7 +141,7 @@ function Install-WinSWService {
     $nodePath = Get-NodePath
     $xmlPath = Join-Path $SkillDir "$ServiceName.xml"
 
-    # Run as current user so the service can access ~/.claude-to-im and Codex login state
+    # Run as current user so the service can access ~/.codex-to-im and Codex login state
     $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     Write-Host "Service will run as: $currentUser"
     $cred = Get-Credential -UserName $currentUser -Message "Enter password for '$currentUser' (required for Windows Service logon)"
@@ -185,7 +191,7 @@ function Install-NSSMService {
     param([string]$NSSMPath)
     $nodePath = Get-NodePath
 
-    # Run as current user so the service can access ~/.claude-to-im and Codex login state
+    # Run as current user so the service can access ~/.codex-to-im and Codex login state
     $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     Write-Host "Service will run as: $currentUser"
     $cred = Get-Credential -UserName $currentUser -Message "Enter password for '$currentUser' (required for Windows Service logon)"

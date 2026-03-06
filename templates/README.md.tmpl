@@ -1,6 +1,6 @@
-# Claude-to-IM Skill
+# {{HOST_DISPLAY}}-to-IM Skill
 
-Bridge your AI coding host to IM platforms — chat with coding agents from Telegram, Discord, Feishu/Lark, or QQ.
+Bridge your AI coding host to IM platforms — chat with coding agents from Telegram, Discord, or Feishu/Lark.
 
 [中文文档](README_CN.md)
 
@@ -13,7 +13,7 @@ Bridge your AI coding host to IM platforms — chat with coding agents from Tele
 This skill runs a background daemon that connects your IM bots to the currently installed host agent. Messages from IM are forwarded to the coding agent, and responses (including tool use, permission requests, streaming previews) are sent back to your chat.
 
 ```
-You (Telegram/Discord/Feishu/QQ)
+You (Telegram/Discord/Feishu)
   ↕ Bot API
 Background Daemon (Node.js)
   ↕ Host SDK or CLI bridge (configurable via CTI_RUNTIME)
@@ -22,9 +22,9 @@ Installed host agent → reads/writes your codebase
 
 ## Features
 
-- **Four IM platforms** — Telegram, Discord, Feishu/Lark, QQ — enable any combination
+- **Three IM platforms** — Telegram, Discord, Feishu/Lark, enable any combination
 - **Interactive setup** — guided wizard collects tokens with step-by-step instructions
-- **Permission control** — tool calls require explicit approval via inline buttons (Telegram/Discord) or text `/perm` commands (Feishu/QQ)
+- **Permission control** — tool calls require explicit approval via inline buttons in chat
 - **Streaming preview** — see Claude's response as it types (Telegram & Discord)
 - **Session persistence** — conversations survive daemon restarts
 - **Secret protection** — tokens stored with `chmod 600`, auto-redacted in all logs
@@ -33,9 +33,7 @@ Installed host agent → reads/writes your codebase
 
 ## Prerequisites
 
-- **Node.js >= 20**
-- **Claude Code CLI** — installed and authenticated (`claude` command available)
-- **Optional Codex CLI** (only if you plan to use `CTI_RUNTIME=codex` or `auto`) — `npm install -g @openai/codex`
+{{PREREQUISITES_EN}}
 
 ## Installation
 
@@ -48,7 +46,7 @@ npx skills add op7418/Claude-to-IM-skill
 ### Git clone
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git {{HOST_SKILLS_DIR}}/{{SKILL_COMMAND}}
 ```
 
 Clones the repo directly into the selected host skills directory.
@@ -59,16 +57,16 @@ If you prefer to keep the repo elsewhere (e.g., for development):
 
 ```bash
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-mkdir -p ~/.claude/skills
-ln -s ~/code/Claude-to-IM-skill ~/.claude/skills/claude-to-im
+mkdir -p {{HOST_SKILLS_DIR}}
+ln -s ~/code/Claude-to-IM-skill {{HOST_SKILLS_DIR}}/{{SKILL_COMMAND}}
 ```
 
-### Claude
+### {{HOST_DISPLAY}}
 
-If you use Claude Code, clone directly into the Claude skills directory:
+{{INSTALL_LEAD_EN}}
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git {{HOST_SKILLS_DIR}}/{{SKILL_COMMAND}}
 ```
 
 Or use the provided install script for automatic dependency installation and build:
@@ -76,10 +74,10 @@ Or use the provided install script for automatic dependency installation and bui
 ```bash
 # Clone and install (copy mode)
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh
+bash ~/code/Claude-to-IM-skill/scripts/install-{{HOST}}.sh
 
 # Or use symlink mode for development
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh --link
+bash ~/code/Claude-to-IM-skill/scripts/install-{{HOST}}.sh --link
 ```
 
 ### Multi-host install
@@ -100,19 +98,19 @@ This creates isolated skill commands and runtime homes, following the pattern:
 
 ### Verify installation
 
-**Claude:** Start a new session and type `/` — you should see `claude-to-im` in the skill list.
+{{VERIFY_INSTALLATION_EN}}
 
 ## Quick Start
 
 ### 1. Setup
 
 ```
-/claude-to-im setup
+/{{SKILL_COMMAND}} setup
 ```
 
 The wizard will guide you through:
 
-1. **Choose channels** — pick Telegram, Discord, Feishu, QQ, or any combination
+1. **Choose channels** — pick Telegram, Discord, Feishu, or any combination
 2. **Enter credentials** — the wizard explains exactly where to get each token, which settings to enable, and what permissions to grant
 3. **Set defaults** — working directory, model, and mode
 4. **Validate** — tokens are verified against platform APIs immediately
@@ -120,7 +118,7 @@ The wizard will guide you through:
 ### 2. Start
 
 ```
-/claude-to-im start
+/{{SKILL_COMMAND}} start
 ```
 
 The daemon starts in the background. You can close the terminal — it keeps running.
@@ -129,7 +127,7 @@ The daemon starts in the background. You can close the terminal — it keeps run
 
 Open your IM app and send a message to your bot. Your installed host agent will respond.
 
-When the agent needs to use a tool (edit a file, run a command), you'll see a permission prompt with **Allow** / **Deny** buttons right in the chat (Telegram/Discord), or a text `/perm` command prompt (Feishu/QQ).
+When the agent needs to use a tool (edit a file, run a command), you'll see a permission prompt with **Allow** / **Deny** buttons right in the chat.
 
 ## Commands
 
@@ -137,14 +135,14 @@ All commands are run inside your installed host:
 
 | Slash-command hosts | Natural-language hosts | Description |
 |---|---|---|
-| `/claude-to-im setup` | "claude-to-im setup" / "配置" | Interactive setup wizard |
-| `/claude-to-im start` | "start bridge" / "启动桥接" | Start the bridge daemon |
-| `/claude-to-im stop` | "stop bridge" / "停止桥接" | Stop the bridge daemon |
-| `/claude-to-im status` | "bridge status" / "状态" | Show daemon status |
-| `/claude-to-im logs` | "查看日志" | Show last 50 log lines |
-| `/claude-to-im logs 200` | "logs 200" | Show last 200 log lines |
-| `/claude-to-im reconfigure` | "reconfigure" / "修改配置" | Update config interactively |
-| `/claude-to-im doctor` | "doctor" / "诊断" | Diagnose issues |
+| `/{{SKILL_COMMAND}} setup` | "{{SKILL_COMMAND}} setup" / "配置" | Interactive setup wizard |
+| `/{{SKILL_COMMAND}} start` | "start bridge" / "启动桥接" | Start the bridge daemon |
+| `/{{SKILL_COMMAND}} stop` | "stop bridge" / "停止桥接" | Stop the bridge daemon |
+| `/{{SKILL_COMMAND}} status` | "bridge status" / "状态" | Show daemon status |
+| `/{{SKILL_COMMAND}} logs` | "查看日志" | Show last 50 log lines |
+| `/{{SKILL_COMMAND}} logs 200` | "logs 200" | Show last 200 log lines |
+| `/{{SKILL_COMMAND}} reconfigure` | "reconfigure" / "修改配置" | Update config interactively |
+| `/{{SKILL_COMMAND}} doctor` | "doctor" / "诊断" | Diagnose issues |
 
 ## Platform Setup Guides
 
@@ -173,16 +171,6 @@ The `setup` wizard provides inline guidance for every step. Here's a summary:
 5. **Events & Callbacks**: select **"Long Connection"** as event dispatch method → add `im.message.receive_v1` event
 6. **Publish**: go to "Version Management & Release" → create version → submit for review → approve in Admin Console
 7. **Important**: The bot will NOT work until the version is approved and published
-
-### QQ
-
-> QQ currently supports **C2C private chat only**. No group/channel support, no inline permission buttons, no streaming preview. Permissions use text `/perm ...` commands. Image inbound only (no image replies).
-
-1. Go to [QQ Bot OpenClaw](https://q.qq.com/qqbot/openclaw)
-2. Create a QQ Bot or select an existing one → get **App ID** and **App Secret** (only two required fields)
-3. Configure sandbox access and scan QR code with QQ to add the bot
-4. `CTI_QQ_ALLOWED_USERS` takes `user_openid` values (not QQ numbers) — can be left empty initially
-5. Set `CTI_QQ_IMAGE_ENABLED=false` if the underlying provider doesn't support image input
 
 ## Architecture
 
@@ -233,7 +221,7 @@ The `setup` wizard provides inline guidance for every step. Here's a summary:
 Run diagnostics:
 
 ```
-/claude-to-im doctor
+/{{SKILL_COMMAND}} doctor
 ```
 
 This checks: Node.js version, config file existence and permissions, token validity (live API calls), log directory, PID file consistency, and recent errors.
@@ -249,7 +237,7 @@ See [references/troubleshooting.md](references/troubleshooting.md) for more deta
 
 ## Security
 
-- All credentials stored in `~/.claude-to-im/config.env` with `chmod 600`
+- All credentials stored in `~/.{{SKILL_COMMAND}}/config.env` with `chmod 600`
 - Tokens are automatically redacted in all log output (pattern-based masking)
 - Allowed user/channel/guild lists restrict who can interact with the bot
 - The daemon is a local process with no inbound network listeners

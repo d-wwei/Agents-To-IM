@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-bash "$SCRIPT_DIR/install-host.sh" --host codex "$@"
+bash "$SCRIPT_DIR/install-host.sh" --host gemini "$@"

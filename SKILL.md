@@ -1,11 +1,12 @@
 ---
 name: claude-to-im
 description: |
-  Bridge THIS Claude Code session to Telegram, Discord, Feishu/Lark, or QQ so the
-  user can chat with Claude from their phone. Use for: setting up, starting, stopping,
-  or diagnosing the claude-to-im bridge daemon; forwarding Claude replies to a messaging
-  app; any phrase like "claude-to-im", "bridge", "消息推送", "消息转发", "桥接",
-  "连上飞书", "手机上看claude", "启动后台服务", "诊断", "查看日志", "配置".
+  This skill bridges the current host coding agent to IM platforms (Telegram, Discord,
+  Feishu/Lark, or QQ). It should be used when the user wants to start a background
+  daemon that forwards IM messages to host agent sessions, or manage that daemon's
+  lifecycle. Trigger on: "claude-to-im", "start bridge", "stop bridge", "bridge status",
+  "查看日志", "启动桥接", "停止桥接", "消息推送", "消息转发", "桥接", "诊断", or
+  any mention of IM bridge management.
   Subcommands: setup, start, stop, status, logs, reconfigure, doctor.
   Do NOT use for: building standalone bots, webhook integrations, or coding with IM
   platform SDKs — those are regular programming tasks.
@@ -52,8 +53,8 @@ Before asking users for any platform credentials, first read `SKILL_DIR/referenc
 
 Before executing any subcommand, detect which environment you are running in:
 
-1. **Claude Code** — `AskUserQuestion` tool is available. Use it for interactive setup wizards.
-2. **Codex / other** — `AskUserQuestion` is NOT available. Fall back to non-interactive guidance: explain the steps, show `SKILL_DIR/config.env.example`, and ask the user to create `~/.claude-to-im/config.env` manually.
+1. **Interactive skill hosts** — `AskUserQuestion` tool is available. Use it for interactive setup wizards.
+2. **Non-interactive hosts** — `AskUserQuestion` is NOT available. Fall back to non-interactive guidance: explain the steps, show `SKILL_DIR/config.env.example`, and ask the user to create `~/.claude-to-im/config.env` manually.
 
 You can test this by checking if AskUserQuestion is in your available tools list.
 
@@ -62,15 +63,15 @@ You can test this by checking if AskUserQuestion is in your available tools list
 Before running any subcommand other than `setup`, check if `~/.claude-to-im/config.env` exists:
 
 - **If it does NOT exist:**
-  - In Claude Code: tell the user "No configuration found" and automatically start the `setup` wizard using AskUserQuestion.
-  - In Codex: tell the user "No configuration found. Please create `~/.claude-to-im/config.env` based on the example:" then show the contents of `SKILL_DIR/config.env.example` and stop. Don't attempt to start the daemon — without config.env the process will crash on startup and leave behind a stale PID file that blocks future starts.
+  - In interactive hosts: tell the user "No configuration found" and automatically start the `setup` wizard using AskUserQuestion.
+  - In non-interactive hosts: tell the user "No configuration found. Please create `~/.claude-to-im/config.env` based on the example:" then show the contents of `SKILL_DIR/config.env.example` and stop. Do NOT attempt to start the daemon — without config.env the process will crash on startup and may leave behind a stale PID file that blocks future starts.
 - **If it exists:** proceed with the requested subcommand.
 
 ## Subcommands
 
 ### `setup`
 
-Run an interactive setup wizard. This subcommand requires `AskUserQuestion`. If it is not available (Codex environment), instead show the contents of `SKILL_DIR/config.env.example` with field-by-field explanations and instruct the user to create the config file manually.
+Run an interactive setup wizard. This subcommand requires `AskUserQuestion`. If it is not available, instead show the contents of `SKILL_DIR/config.env.example` with field-by-field explanations and instruct the user to create the config file manually.
 
 When AskUserQuestion IS available, collect input **one field at a time**. After each answer, confirm the value back to the user (masking secrets to last 4 chars only) before moving to the next question.
 
@@ -102,9 +103,9 @@ For each enabled channel, read `SKILL_DIR/references/setup-guides.md` and presen
 
 Ask for runtime, default working directory, model, and mode:
 - **Runtime**: `claude` (default), `codex`, `auto`
-  - `claude` — uses Claude Code CLI + Claude Agent SDK (requires `claude` CLI installed)
-  - `codex` — uses OpenAI Codex SDK (requires `codex` CLI; auth via `codex auth login` or `OPENAI_API_KEY`)
-  - `auto` — tries Claude first, falls back to Codex if Claude CLI not found
+  - `claude` — recommended in this host; uses Claude Code CLI + Claude Agent SDK
+  - `codex` — optional alternative; uses OpenAI Codex SDK
+  - `auto` — prefers Claude first, then falls back to Codex
 - **Working Directory**: default `$CWD`
 - **Model** (optional): Leave blank to inherit the runtime's own default model. If the user wants to override, ask them to enter a model name. Do NOT hardcode or suggest specific model names — the available models change over time.
 - **Mode**: `code` (default), `plan`, `ask`

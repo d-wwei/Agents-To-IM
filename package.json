@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.js",
+    "render:host": "node scripts/render-host-templates.mjs",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/main.ts",
     "test": "CTI_HOME=$(mktemp -d) node --test --import tsx --test-timeout=15000 src/__tests__/*.test.ts"

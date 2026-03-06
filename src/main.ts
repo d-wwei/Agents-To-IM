@@ -14,7 +14,7 @@ import * as bridgeManager from 'claude-to-im/src/lib/bridge/bridge-manager.js';
 import 'claude-to-im/src/lib/bridge/adapters/index.js';
 
 import type { LLMProvider } from 'claude-to-im/src/lib/bridge/host.js';
-import { loadConfig, configToSettings, CTI_HOME } from './config.js';
+import { loadConfig, configToSettings, CTI_HOME, HOST_PROFILE } from './config.js';
 import type { Config } from './config.js';
 import { JsonFileStore } from './store.js';
 import { SDKLLMProvider, resolveClaudeCliPath, preflightCheck } from './llm-provider.js';
@@ -24,6 +24,7 @@ import { setupLogger } from './logger.js';
 const RUNTIME_DIR = path.join(CTI_HOME, 'runtime');
 const STATUS_FILE = path.join(RUNTIME_DIR, 'status.json');
 const PID_FILE = path.join(RUNTIME_DIR, 'bridge.pid');
+const LOG_PREFIX = HOST_PROFILE.logPrefix;
 
 /**
  * Resolve the LLM provider based on the runtime setting.
@@ -36,7 +37,7 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
 
   if (runtime === 'codex') {
     const { CodexProvider } = await import('./codex-provider.js');
-    return new CodexProvider(pendingPerms);
+    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false);
   }
 
   if (runtime === 'auto') {
@@ -45,42 +46,41 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
       // Auto mode: preflight the resolved CLI before committing to it.
       const check = preflightCheck(cliPath);
       if (check.ok) {
-        console.log(`[claude-to-im] Auto: using Claude CLI at ${cliPath} (${check.version})`);
+        console.log(`[${LOG_PREFIX}] Auto: using Claude CLI at ${cliPath} (${check.version})`);
         return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
       }
       // Preflight failed — fall through to Codex instead of silently using a broken CLI
       console.warn(
-        `[claude-to-im] Auto: Claude CLI at ${cliPath} failed preflight: ${check.error}\n` +
+        `[${LOG_PREFIX}] Auto: Claude CLI at ${cliPath} failed preflight: ${check.error}\n` +
         `  Falling back to Codex.`,
       );
     } else {
-      console.log('[claude-to-im] Auto: Claude CLI not found, falling back to Codex');
+      console.log(`[${LOG_PREFIX}] Auto: Claude CLI not found, falling back to Codex`);
     }
     const { CodexProvider } = await import('./codex-provider.js');
-    return new CodexProvider(pendingPerms);
+    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false);
   }
 
   // Default: claude
   const cliPath = resolveClaudeCliPath();
   if (!cliPath) {
     console.error(
-      '[claude-to-im] FATAL: Cannot find the `claude` CLI executable.\n' +
+      `[${LOG_PREFIX}] FATAL: Cannot find the \`claude\` CLI executable.\n` +
       '  Tried: CTI_CLAUDE_CODE_EXECUTABLE env, /usr/local/bin/claude, /opt/homebrew/bin/claude, ~/.npm-global/bin/claude, ~/.local/bin/claude\n' +
       '  Fix: Install Claude Code CLI (https://docs.anthropic.com/en/docs/claude-code) or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/claude\n' +
       '  Or: Set CTI_RUNTIME=codex to use Codex instead',
     );
     process.exit(1);
   }
-
   // Preflight: verify the CLI can actually run in the daemon environment.
   // In claude runtime this is fatal — starting with a broken CLI would just
   // defer the error to the first user message, which is harder to diagnose.
   const check = preflightCheck(cliPath);
   if (check.ok) {
-    console.log(`[claude-to-im] CLI preflight OK: ${cliPath} (${check.version})`);
+    console.log(`[${LOG_PREFIX}] CLI preflight OK: ${cliPath} (${check.version})`);
   } else {
     console.error(
-      `[claude-to-im] FATAL: Claude CLI preflight check failed.\n` +
+      `[${LOG_PREFIX}] FATAL: Claude CLI preflight check failed.\n` +
       `  Path: ${cliPath}\n` +
       `  Error: ${check.error}\n` +
       `  Fix:\n` +
@@ -90,7 +90,6 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
     );
     process.exit(1);
   }
-
   return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
 }
 
@@ -119,13 +118,13 @@ async function main(): Promise<void> {
   setupLogger();
 
   const runId = crypto.randomUUID();
-  console.log(`[claude-to-im] Starting bridge (run_id: ${runId})`);
+  console.log(`[${LOG_PREFIX}] Starting bridge (run_id: ${runId})`);
 
   const settings = configToSettings(config);
   const store = new JsonFileStore(settings);
   const pendingPerms = new PendingPermissions();
   const llm = await resolveProvider(config, pendingPerms);
-  console.log(`[claude-to-im] Runtime: ${config.runtime}`);
+  console.log(`[${LOG_PREFIX}] Runtime: ${config.runtime}`);
 
   const gateway = {
     resolvePendingPermission: (id: string, resolution: { behavior: 'allow' | 'deny'; message?: string }) =>
@@ -148,11 +147,11 @@ async function main(): Promise<void> {
           startedAt: new Date().toISOString(),
           channels: config.enabledChannels,
         });
-        console.log(`[claude-to-im] Bridge started (PID: ${process.pid}, channels: ${config.enabledChannels.join(', ')})`);
+        console.log(`[${LOG_PREFIX}] Bridge started (PID: ${process.pid}, channels: ${config.enabledChannels.join(', ')})`);
       },
       onBridgeStop: () => {
         writeStatus({ running: false });
-        console.log('[claude-to-im] Bridge stopped');
+        console.log(`[${LOG_PREFIX}] Bridge stopped`);
       },
     },
   });
@@ -165,7 +164,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     const reason = signal ? `signal: ${signal}` : 'shutdown requested';
-    console.log(`[claude-to-im] Shutting down (${reason})...`);
+    console.log(`[${LOG_PREFIX}] Shutting down (${reason})...`);
     pendingPerms.denyAll();
     await bridgeManager.stop();
     writeStatus({ running: false, lastExitReason: reason });
@@ -178,19 +177,19 @@ async function main(): Promise<void> {
 
   // ── Exit diagnostics ──
   process.on('unhandledRejection', (reason) => {
-    console.error('[claude-to-im] unhandledRejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+    console.error(`[${LOG_PREFIX}] unhandledRejection:`, reason instanceof Error ? reason.stack || reason.message : reason);
     writeStatus({ running: false, lastExitReason: `unhandledRejection: ${reason instanceof Error ? reason.message : String(reason)}` });
   });
   process.on('uncaughtException', (err) => {
-    console.error('[claude-to-im] uncaughtException:', err.stack || err.message);
+    console.error(`[${LOG_PREFIX}] uncaughtException:`, err.stack || err.message);
     writeStatus({ running: false, lastExitReason: `uncaughtException: ${err.message}` });
     process.exit(1);
   });
   process.on('beforeExit', (code) => {
-    console.log(`[claude-to-im] beforeExit (code: ${code})`);
+    console.log(`[${LOG_PREFIX}] beforeExit (code: ${code})`);
   });
   process.on('exit', (code) => {
-    console.log(`[claude-to-im] exit (code: ${code})`);
+    console.log(`[${LOG_PREFIX}] exit (code: ${code})`);
   });
 
   // ── Heartbeat to keep event loop alive ──
@@ -200,7 +199,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[claude-to-im] Fatal error:', err instanceof Error ? err.stack || err.message : err);
+  console.error(`[${LOG_PREFIX}] Fatal error:`, err instanceof Error ? err.stack || err.message : err);
   try { writeStatus({ running: false, lastExitReason: `fatal: ${err instanceof Error ? err.message : String(err)}` }); } catch { /* ignore */ }
   process.exit(1);
 });

@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { getHostProfile } from "./host-profile.js";
 
 export interface Config {
   runtime: 'claude' | 'codex' | 'auto';
@@ -8,6 +8,7 @@ export interface Config {
   defaultWorkDir: string;
   defaultModel?: string;
   defaultMode: string;
+  codexSkipGitRepoCheck?: boolean;
   // Telegram
   tgBotToken?: string;
   tgChatId?: string;
@@ -32,7 +33,8 @@ export interface Config {
   autoApprove?: boolean;
 }
 
-export const CTI_HOME = process.env.CTI_HOME || path.join(os.homedir(), ".claude-to-im");
+export const HOST_PROFILE = getHostProfile(import.meta.url);
+export const CTI_HOME = process.env.CTI_HOME || HOST_PROFILE.runtimeHomePath;
 export const CONFIG_PATH = path.join(CTI_HOME, "config.env");
 
 function parseEnvFile(content: string): Map<string, string> {
@@ -54,14 +56,6 @@ function parseEnvFile(content: string): Map<string, string> {
     entries.set(key, value);
   }
   return entries;
-}
-
-function expandShellVars(value: string): string {
-  return value
-    .replace(/\$\{HOME\}/g, os.homedir())
-    .replace(/\$HOME/g, os.homedir())
-    .replace(/\$\{CWD\}/g, process.cwd())
-    .replace(/\$CWD/g, process.cwd());
 }
 
 function splitCsv(value: string | undefined): string[] | undefined {
@@ -87,9 +81,10 @@ export function loadConfig(): Config {
   return {
     runtime,
     enabledChannels: splitCsv(env.get("CTI_ENABLED_CHANNELS")) ?? [],
-    defaultWorkDir: expandShellVars(env.get("CTI_DEFAULT_WORKDIR") || process.cwd()),
+    defaultWorkDir: env.get("CTI_DEFAULT_WORKDIR") || process.cwd(),
     defaultModel: env.get("CTI_DEFAULT_MODEL") || undefined,
     defaultMode: env.get("CTI_DEFAULT_MODE") || "code",
+    codexSkipGitRepoCheck: env.get("CTI_CODEX_SKIP_GIT_REPO_CHECK") !== "false",
     tgBotToken: env.get("CTI_TG_BOT_TOKEN") || undefined,
     tgChatId: env.get("CTI_TG_CHAT_ID") || undefined,
     tgAllowedUsers: splitCsv(env.get("CTI_TG_ALLOWED_USERS")),
@@ -131,6 +126,10 @@ export function saveConfig(config: Config): void {
   out += formatEnvLine("CTI_DEFAULT_WORKDIR", config.defaultWorkDir);
   if (config.defaultModel) out += formatEnvLine("CTI_DEFAULT_MODEL", config.defaultModel);
   out += formatEnvLine("CTI_DEFAULT_MODE", config.defaultMode);
+  out += formatEnvLine(
+    "CTI_CODEX_SKIP_GIT_REPO_CHECK",
+    config.codexSkipGitRepoCheck === false ? "false" : "true"
+  );
   out += formatEnvLine("CTI_TG_BOT_TOKEN", config.tgBotToken);
   out += formatEnvLine("CTI_TG_CHAT_ID", config.tgChatId);
   out += formatEnvLine(

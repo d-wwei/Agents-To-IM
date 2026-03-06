@@ -6,8 +6,7 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { LLMProvider, StreamChatParams, FileAttachment } from 'claude-to-im/src/lib/bridge/host.js';
@@ -282,20 +281,17 @@ function findAllInPath(): string[] {
  */
 function sdkCliFallback(): string | undefined {
   try {
-    // The SDK is an external module — resolve its location then find cli.js next to it.
     const sdkMain = require.resolve('@anthropic-ai/claude-agent-sdk');
     const candidate = path.join(path.dirname(sdkMain), 'cli.js');
     if (isExecutable(candidate)) return candidate;
   } catch {
-    // SDK not resolvable (unusual)
+    // SDK not resolvable
   }
   return undefined;
 }
 
 /**
  * Verify a native binary can actually be spawned in the current process context.
- * File-existence checks (X_OK) are insufficient — in some environments (e.g. macOS
- * launchd agents) an executable that exists on disk still fails to spawn with ENOENT.
  */
 function canSpawn(binaryPath: string): boolean {
   try {

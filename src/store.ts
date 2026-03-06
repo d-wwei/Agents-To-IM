@@ -2,7 +2,7 @@
  * JSON file-backed BridgeStore implementation.
  *
  * Uses in-memory Maps as cache with write-through persistence
- * to JSON files in ~/.claude-to-im/data/.
+ * to JSON files in ~/.codex-to-im/data/.
  */
 
 import fs from 'node:fs';

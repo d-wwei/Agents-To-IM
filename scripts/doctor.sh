@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CTI_HOME="$HOME/.claude-to-im"
+SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/host-profile.sh
+source "$SKILL_DIR/scripts/host-profile.sh"
+init_host_profile "$SKILL_DIR"
+export CTI_HOST="${CTI_HOST:-$HOST_NAME}"
+export CTI_SKILL_COMMAND="${CTI_SKILL_COMMAND:-$SKILL_COMMAND}"
+CTI_HOME="${CTI_HOME:-$CTI_HOME_DEFAULT}"
 CONFIG_FILE="$CTI_HOME/config.env"
 PID_FILE="$CTI_HOME/runtime/bridge.pid"
 LOG_FILE="$CTI_HOME/logs/bridge.log"
@@ -36,7 +42,6 @@ fi
 get_config() { grep "^$1=" "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^["'"'"']//;s/["'"'"']$//'; }
 
 # --- Read runtime setting ---
-SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CTI_RUNTIME=$(get_config CTI_RUNTIME)
 CTI_RUNTIME="${CTI_RUNTIME:-claude}"
 echo "Runtime: $CTI_RUNTIME"
@@ -243,13 +248,13 @@ if [ "$CTI_RUNTIME" = "codex" ] || [ "$CTI_RUNTIME" = "auto" ]; then
   fi
 
   # Check Codex auth: any of CTI_CODEX_API_KEY / CODEX_API_KEY / OPENAI_API_KEY,
-  # or `codex auth status` showing logged-in (interactive login).
+  # or `codex login status` showing logged-in (interactive login).
   CODEX_AUTH=1
   if [ -n "${CTI_CODEX_API_KEY:-}" ] || [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
     CODEX_AUTH=0
   elif command -v codex &>/dev/null; then
-    CODEX_AUTH_OUT=$(codex auth status 2>&1 || true)
-    if echo "$CODEX_AUTH_OUT" | grep -qiE 'logged.in|authenticated'; then
+    CODEX_AUTH_OUT=$(codex login status 2>&1 || true)
+    if echo "$CODEX_AUTH_OUT" | grep -qiE 'logged in|authenticated'; then
       CODEX_AUTH=0
     fi
   fi
@@ -386,7 +391,14 @@ fi
 # --- PID file consistency ---
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
-  if kill -0 "$PID" 2>/dev/null; then
+  if [ "$(uname -s)" = "Darwin" ] && launchctl print "gui/$(id -u)/$LAUNCHD_LABEL_DEFAULT" >/dev/null 2>&1; then
+    LC_PID=$(launchctl print "gui/$(id -u)/$LAUNCHD_LABEL_DEFAULT" 2>/dev/null | grep -m1 'pid = ' | sed 's/.*pid = //' | tr -d ' ')
+    if [ -n "$LC_PID" ] && [ "$LC_PID" != "0" ] && [ "$LC_PID" != "-" ]; then
+      check "PID file consistent (launchd reports process $LC_PID is running)" 0
+    else
+      check "PID file consistent (launchd service has no live pid)" 1
+    fi
+  elif kill -0 "$PID" 2>/dev/null; then
     check "PID file consistent (process $PID is running)" 0
   else
     check "PID file consistent (stale PID $PID, process not running)" 1
@@ -397,9 +409,15 @@ fi
 
 # --- Recent errors in log ---
 if [ -f "$LOG_FILE" ]; then
-  ERROR_COUNT=$(tail -50 "$LOG_FILE" | grep -ciE 'ERROR|Fatal' || true)
+  RECENT_LOG=$(awk '
+    /\[claude-to-im\] Starting bridge \(run_id:/ { buffer = "" }
+    /\[[a-z0-9-]+-to-im\] Starting bridge \(run_id:/ { buffer = "" }
+    { buffer = buffer $0 "\n" }
+    END { printf "%s", buffer }
+  ' "$LOG_FILE")
+  ERROR_COUNT=$(printf "%s" "$RECENT_LOG" | grep -iE 'ERROR|Fatal' | grep -vic 'DeprecationWarning' || true)
   if [ "$ERROR_COUNT" -eq 0 ]; then
-    check "No recent errors in log (last 50 lines)" 0
+    check "No recent errors in log (since last bridge start)" 0
   else
     check "No recent errors in log (found $ERROR_COUNT ERROR/Fatal lines)" 1
   fi

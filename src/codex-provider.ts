@@ -75,7 +75,10 @@ export class CodexProvider implements LLMProvider {
   /** Maps session IDs to Codex thread IDs for resume. */
   private threadIds = new Map<string, string>();
 
-  constructor(private pendingPerms: PendingPermissions) {}
+  constructor(
+    private pendingPerms: PendingPermissions,
+    private skipGitRepoCheck = true,
+  ) {}
 
   /**
    * Lazily load the Codex SDK. Throws a clear error if not installed.
@@ -139,6 +142,7 @@ export class CodexProvider implements LLMProvider {
             const threadOptions: Record<string, unknown> = {
               ...(passModel && params.model ? { model: params.model } : {}),
               ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
+              skipGitRepoCheck: self.skipGitRepoCheck,
               approvalPolicy,
             };
 

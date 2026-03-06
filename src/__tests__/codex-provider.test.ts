@@ -288,6 +288,36 @@ describe('CodexProvider', () => {
     assert.equal(startCalls, 1, 'Should start a fresh Codex thread');
     assert.ok(capturedStartOptions, 'startThread options should be captured');
     assert.ok(!Object.prototype.hasOwnProperty.call(capturedStartOptions!, 'model'), 'Model should not be forwarded by default');
+    assert.equal(capturedStartOptions?.skipGitRepoCheck, true, 'Should skip git repo trust check by default');
+  });
+
+  it('allows disabling skipGitRepoCheck explicitly', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions(), false);
+
+    let capturedStartOptions: Record<string, unknown> | undefined;
+    const mockThread = {
+      runStreamed: () => ({
+        events: (async function* () {
+          yield { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 } };
+        })(),
+      }),
+    };
+    (provider as any).sdk = { Codex: class { constructor() {} } };
+    (provider as any).codex = {
+      startThread: (opts: Record<string, unknown>) => {
+        capturedStartOptions = opts;
+        return mockThread;
+      },
+    };
+
+    await collectStream(provider.streamChat({
+      prompt: 'hello',
+      sessionId: 'skip-git-disabled-session',
+    }));
+
+    assert.equal(capturedStartOptions?.skipGitRepoCheck, false);
   });
 
   it('passes model only when CTI_CODEX_PASS_MODEL=true', async () => {

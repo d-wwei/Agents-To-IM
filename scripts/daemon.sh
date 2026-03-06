@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CTI_HOME="${CTI_HOME:-$HOME/.claude-to-im}"
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/host-profile.sh
+source "$SKILL_DIR/scripts/host-profile.sh"
+init_host_profile "$SKILL_DIR"
+export CTI_HOST="${CTI_HOST:-$HOST_NAME}"
+export CTI_SKILL_COMMAND="${CTI_SKILL_COMMAND:-$SKILL_COMMAND}"
+CTI_HOME="${CTI_HOME:-$CTI_HOME_DEFAULT}"
 PID_FILE="$CTI_HOME/runtime/bridge.pid"
 STATUS_FILE="$CTI_HOME/runtime/status.json"
 LOG_FILE="$CTI_HOME/logs/bridge.log"

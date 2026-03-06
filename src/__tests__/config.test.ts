@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { maskSecret, configToSettings, type Config } from '../config.js';
+import { buildHostProfile, inferHostFromPath, inferHostFromSkillCommand } from '../host-profile.js';
 
 // ── maskSecret ──
 
@@ -193,5 +194,26 @@ describe('loadConfig/saveConfig round-trip', () => {
     assert.equal(m.get('bridge_discord_enabled'), 'false');
     assert.equal(m.get('bridge_feishu_enabled'), 'false');
     assert.equal(m.get('bridge_qq_enabled'), 'false');
+  });
+});
+
+describe('host profile', () => {
+  it('infers host from skill command', () => {
+    assert.equal(inferHostFromSkillCommand('codex-to-im'), 'codex');
+    assert.equal(inferHostFromSkillCommand('gemini-to-im'), 'gemini');
+    assert.equal(inferHostFromSkillCommand('not-a-skill'), undefined);
+  });
+
+  it('infers host from runtime path basename', () => {
+    assert.equal(inferHostFromPath('/tmp/.claude-to-im'), 'claude');
+    assert.equal(inferHostFromPath('/tmp/.gemini-to-im'), 'gemini');
+  });
+
+  it('builds host-specific defaults', () => {
+    const profile = buildHostProfile('gemini');
+    assert.equal(profile.skillCommand, 'gemini-to-im');
+    assert.equal(profile.runtimeHomeName, '.gemini-to-im');
+    assert.equal(profile.launchdLabel, 'com.gemini-to-im.bridge');
+    assert.equal(profile.serviceName, 'GeminiToIMBridge');
   });
 });
