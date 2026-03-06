@@ -109,6 +109,7 @@ Ask for runtime, default working directory, model, and mode:
    - Feishu: `curl -s -X POST "${DOMAIN}/open-apis/auth/v3/tenant_access_token/internal" -H "Content-Type: application/json" -d '{"app_id":"...","app_secret":"..."}'` — check for `"code":0`
    - Discord: verify token matches format `[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`
 7. Report results with a summary table. If any validation fails, explain what might be wrong and how to fix it.
+8. On success, tell the user: "Setup complete! Run `/claude-to-im start` to start the bridge."
 
 ### `start`
 
