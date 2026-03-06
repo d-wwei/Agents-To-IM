@@ -3,12 +3,14 @@ import path from "node:path";
 import { getHostProfile } from "./host-profile.js";
 
 export interface Config {
-  runtime: 'claude' | 'codex' | 'auto';
+  runtime: 'claude' | 'codex' | 'gemini' | 'auto';
   enabledChannels: string[];
   defaultWorkDir: string;
   defaultModel?: string;
   defaultMode: string;
   codexSkipGitRepoCheck?: boolean;
+  geminiApiKey?: string;
+  googleApiKey?: string;
   // Telegram
   tgBotToken?: string;
   tgChatId?: string;
@@ -76,7 +78,7 @@ export function loadConfig(): Config {
   }
 
   const rawRuntime = env.get("CTI_RUNTIME") || "claude";
-  const runtime = (["claude", "codex", "auto"].includes(rawRuntime) ? rawRuntime : "claude") as Config["runtime"];
+  const runtime = (["claude", "codex", "gemini", "auto"].includes(rawRuntime) ? rawRuntime : "claude") as Config["runtime"];
 
   return {
     runtime,
@@ -85,6 +87,8 @@ export function loadConfig(): Config {
     defaultModel: env.get("CTI_DEFAULT_MODEL") || undefined,
     defaultMode: env.get("CTI_DEFAULT_MODE") || "code",
     codexSkipGitRepoCheck: env.get("CTI_CODEX_SKIP_GIT_REPO_CHECK") !== "false",
+    geminiApiKey: env.get("CTI_GEMINI_API_KEY") || undefined,
+    googleApiKey: env.get("CTI_GOOGLE_API_KEY") || undefined,
     tgBotToken: env.get("CTI_TG_BOT_TOKEN") || undefined,
     tgChatId: env.get("CTI_TG_CHAT_ID") || undefined,
     tgAllowedUsers: splitCsv(env.get("CTI_TG_ALLOWED_USERS")),
@@ -130,6 +134,8 @@ export function saveConfig(config: Config): void {
     "CTI_CODEX_SKIP_GIT_REPO_CHECK",
     config.codexSkipGitRepoCheck === false ? "false" : "true"
   );
+  out += formatEnvLine("CTI_GEMINI_API_KEY", config.geminiApiKey);
+  out += formatEnvLine("CTI_GOOGLE_API_KEY", config.googleApiKey);
   out += formatEnvLine("CTI_TG_BOT_TOKEN", config.tgBotToken);
   out += formatEnvLine("CTI_TG_CHAT_ID", config.tgChatId);
   out += formatEnvLine(

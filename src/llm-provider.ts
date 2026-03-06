@@ -25,6 +25,7 @@ const ENV_WHITELIST = new Set([
   'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
   'SSH_AUTH_SOCK',
+  'GOOGLE_API_KEY', 'GEMINI_API_KEY',
 ]);
 
 /** Prefixes that are always stripped (even in inherit mode). */
@@ -89,9 +90,9 @@ export function isNonClaudeModel(model?: string): boolean {
  * Build a clean env for the CLI subprocess.
  *
  * CTI_ENV_ISOLATION (default "inherit"):
- *   "inherit" — full parent env minus CLAUDECODE (recommended; daemon
+ *   "inherit" — full parent env minus CLAUDECODE/GEMINI (recommended; daemon
  *               already runs in a clean launchd/setsid environment)
- *   "strict"  — only whitelist + CTI_* + ANTHROPIC_* from config.env
+ *   "strict"  — only whitelist + CTI_* + provider auth vars from config.env
  */
 export function buildSubprocessEnv(): Record<string, string> {
   const mode = process.env.CTI_ENV_ISOLATION || 'inherit';
@@ -101,7 +102,7 @@ export function buildSubprocessEnv(): Record<string, string> {
     // Pass everything except always-stripped vars
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined) continue;
-      if (ENV_ALWAYS_STRIP.includes(k)) continue;
+      if (ENV_ALWAYS_STRIP.some(s => k.startsWith(s))) continue;
       out[k] = v;
     }
   } else {
@@ -112,19 +113,26 @@ export function buildSubprocessEnv(): Record<string, string> {
       // Pass through CTI_* so skill config is available
       if (k.startsWith('CTI_')) { out[k] = v; continue; }
     }
-    // Always pass through ANTHROPIC_* in claude/auto runtime —
-    // third-party API providers need these to reach the CLI subprocess.
-    const runtime = process.env.CTI_RUNTIME || 'claude';
-    if (runtime === 'claude' || runtime === 'auto') {
+    // ANTHROPIC_* / GOOGLE_* should come from config.env, not parent process.
+    // Only pass them if the corresponding passthrough flag is explicitly set.
+    if (process.env.CTI_ANTHROPIC_PASSTHROUGH === 'true') {
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && k.startsWith('ANTHROPIC_')) out[k] = v;
       }
     }
-
-    // In codex/auto mode, pass through OPENAI_* / CODEX_* env vars
-    if (runtime === 'codex' || runtime === 'auto') {
+    if (process.env.CTI_GOOGLE_PASSTHROUGH === 'true') {
       for (const [k, v] of Object.entries(process.env)) {
-        if (v !== undefined && (k.startsWith('OPENAI_') || k.startsWith('CODEX_'))) out[k] = v;
+        if (v !== undefined && k.startsWith('GOOGLE_')) out[k] = v;
+      }
+    }
+    if (process.env.CTI_GEMINI_API_KEY) out.GEMINI_API_KEY = process.env.CTI_GEMINI_API_KEY;
+    if (process.env.CTI_GOOGLE_API_KEY) out.GOOGLE_API_KEY = process.env.CTI_GOOGLE_API_KEY;
+
+    // In codex/gemini/auto mode, pass through relevant env vars
+    const runtime = process.env.CTI_RUNTIME || 'claude';
+    if (runtime === 'codex' || runtime === 'gemini' || runtime === 'auto') {
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && (k.startsWith('OPENAI_') || k.startsWith('CODEX_') || k.startsWith('GOOGLE_') || k.startsWith('GEMINI_'))) out[k] = v;
       }
     }
   }
@@ -132,6 +140,7 @@ export function buildSubprocessEnv(): Record<string, string> {
   return out;
 }
 
+// ── Claude CLI preflight check ──
 // ── Claude CLI preflight check ──
 
 /** Minimum major version of Claude CLI required by the SDK. */
@@ -246,7 +255,7 @@ export function preflightCheck(cliPath: string): { ok: boolean; version?: string
   return { ok: true, version: compat.version };
 }
 
-// ── Claude CLI path resolution ──
+// ── CLI path resolution ──
 
 function isExecutable(p: string): boolean {
   try {
@@ -377,6 +386,27 @@ export function resolveClaudeCliPath(): string | undefined {
   // Only fall back to an unverifiable executable — never to a known-old one.
   // This avoids silently using a 1.x CLI that will crash on first message.
   return spawnFallback ?? firstUnverifiable;
+}
+
+/**
+ * Resolve the path to the `gemini` CLI executable.
+ */
+export function resolveGeminiCliPath(): string | undefined {
+  // 1. Explicit env var
+  const fromEnv = process.env.CTI_GEMINI_EXECUTABLE;
+  if (fromEnv && isExecutable(fromEnv)) return fromEnv;
+
+  // 2. Platform-specific command
+  const isWindows = process.platform === 'win32';
+  const cmd = isWindows ? 'where gemini' : 'which gemini';
+  try {
+    const resolved = execSync(cmd, { encoding: 'utf-8', timeout: 3000 }).trim().split('\n')[0];
+    if (resolved && isExecutable(resolved)) return resolved;
+  } catch {
+    // not found in PATH
+  }
+
+  return undefined;
 }
 
 // ── Multi-modal prompt builder ──

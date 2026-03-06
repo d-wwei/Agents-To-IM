@@ -65,6 +65,13 @@ clean_env() {
           case "$name" in OPENAI_*) unset "$name" 2>/dev/null || true ;; esac
         done < <(env)
         ;;
+      gemini)
+        while IFS='=' read -r name _; do
+          case "$name" in
+            ANTHROPIC_*|OPENAI_*|CODEX_*) unset "$name" 2>/dev/null || true
+          esac
+        done < <(env)
+        ;;
       auto)
         # Keep both ANTHROPIC_* and OPENAI_* for auto mode
         ;;

@@ -222,6 +222,26 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
   fi
 fi
 
+# --- Gemini checks ---
+if [ "$CTI_RUNTIME" = "gemini" ]; then
+  if command -v gemini &>/dev/null; then
+    GEMINI_VER=$(gemini --version 2>/dev/null || echo "unknown")
+    check "Gemini CLI available (${GEMINI_VER})" 0
+  else
+    check "Gemini CLI available (not found in PATH)" 1
+  fi
+
+  GEMINI_CFG_KEY=$(grep "^CTI_GEMINI_API_KEY=" "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" | tr -d '"')
+  GOOGLE_CFG_KEY=$(grep "^CTI_GOOGLE_API_KEY=" "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" | tr -d '"')
+  if [ -n "${GEMINI_CFG_KEY:-}" ] || [ -n "${GOOGLE_CFG_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then
+    check "Gemini auth available for headless mode (API key present)" 0
+  elif [ -f "$HOME/.gemini/oauth_creds.json" ]; then
+    check "Gemini auth available for headless mode (cached OAuth credentials present)" 0
+  else
+    check "Gemini auth available for headless mode (set CTI_GEMINI_API_KEY / CTI_GOOGLE_API_KEY or login via Gemini CLI)" 1
+  fi
+fi
+
 # --- Codex checks (codex/auto modes) ---
 if [ "$CTI_RUNTIME" = "codex" ] || [ "$CTI_RUNTIME" = "auto" ]; then
   if command -v codex &>/dev/null; then
@@ -434,6 +454,7 @@ if [ "$FAIL" -gt 0 ]; then
   echo "  SDK cli.js missing    → cd $SKILL_DIR && npm install"
   echo "  dist/daemon.mjs stale → cd $SKILL_DIR && npm run build"
   echo "  config.env missing    → run setup wizard"
+  echo "  Gemini auth missing   → login in Gemini CLI once outside the sandbox or set CTI_GEMINI_API_KEY / CTI_GOOGLE_API_KEY"
   echo "  Stale PID file        → run stop, then start"
 fi
 
