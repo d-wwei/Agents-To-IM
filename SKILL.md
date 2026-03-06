@@ -45,11 +45,31 @@ Extract optional numeric argument for `logs` (default 50).
 
 **IMPORTANT:** Before asking users for any platform credentials, first read `SKILL_DIR/references/setup-guides.md` to get the detailed step-by-step guidance for that platform. Present the relevant guide text to the user via AskUserQuestion so they know exactly what to do.
 
+## Runtime detection
+
+Before executing any subcommand, detect which environment you are running in:
+
+1. **Claude Code** — `AskUserQuestion` tool is available. Use it for interactive setup wizards.
+2. **Codex / other** — `AskUserQuestion` is NOT available. Fall back to non-interactive guidance: explain the steps, show `SKILL_DIR/config.env.example`, and ask the user to create `~/.claude-to-im/config.env` manually.
+
+You can test this by checking if AskUserQuestion is in your available tools list.
+
+## Config check (applies to `start`, `stop`, `status`, `logs`, `reconfigure`, `doctor`)
+
+Before running any subcommand other than `setup`, check if `~/.claude-to-im/config.env` exists:
+
+- **If it does NOT exist:**
+  - In Claude Code: tell the user "No configuration found" and automatically start the `setup` wizard using AskUserQuestion.
+  - In Codex: tell the user "No configuration found. Please create `~/.claude-to-im/config.env` based on the example:" then show the contents of `SKILL_DIR/config.env.example` and stop. Do NOT attempt to start the daemon.
+- **If it exists:** proceed with the requested subcommand.
+
 ## Subcommands
 
 ### `setup`
 
-Run an interactive setup wizard. Collect input **one field at a time** using AskUserQuestion. After each answer, confirm the value back to the user (masking secrets to last 4 chars only) before moving to the next question.
+Run an interactive setup wizard. This subcommand requires `AskUserQuestion`. If it is not available (Codex environment), instead show the contents of `SKILL_DIR/config.env.example` with field-by-field explanations and instruct the user to create the config file manually.
+
+When AskUserQuestion IS available, collect input **one field at a time**. After each answer, confirm the value back to the user (masking secrets to last 4 chars only) before moving to the next question.
 
 **Step 1 — Choose channels**
 
@@ -77,8 +97,6 @@ Ask for runtime, default working directory, model, and mode:
 - **Model**: When runtime is `claude` or `auto`: `claude-sonnet-4-20250514` (default), `claude-opus-4-6`, `claude-haiku-4-5-20251001`. When runtime is `codex`: user can specify any model supported by their Codex setup.
 - **Mode**: `code` (default), `plan`, `ask`
 
-**Note on AskUserQuestion:** If AskUserQuestion is not available (e.g., in Codex), fall back to explaining the setup steps and ask the user to create `~/.claude-to-im/config.env` manually based on the example at `SKILL_DIR/config.env.example`.
-
 **Step 4 — Write config and validate**
 
 1. Show a final summary table with all settings (secrets masked to last 4 chars)
@@ -93,6 +111,8 @@ Ask for runtime, default working directory, model, and mode:
 7. Report results with a summary table. If any validation fails, explain what might be wrong and how to fix it.
 
 ### `start`
+
+**Pre-check:** Verify `~/.claude-to-im/config.env` exists (see "Config check" above). Do NOT proceed without it.
 
 Run: `bash "SKILL_DIR/scripts/daemon.sh" start`
 
@@ -135,6 +155,6 @@ Show results and suggest fixes for any failures. Common fixes:
 ## Notes
 
 - Always mask secrets in output (show only last 4 characters)
-- If config.env doesn't exist and user runs start/status/logs, suggest running setup first
-- The daemon runs as a background Node.js process managed by PID file
+- **Never start the daemon without a valid config.env** — always check first, redirect to setup or show config example
+- The daemon runs as a background Node.js process managed by platform supervisor (launchd on macOS, setsid on Linux, WinSW/NSSM on Windows)
 - Config persists at `~/.claude-to-im/config.env` — survives across sessions
