@@ -22,6 +22,8 @@ export interface Config {
   discordAllowedUsers?: string[];
   discordAllowedChannels?: string[];
   discordAllowedGuilds?: string[];
+  // Auto-approve all tool permission requests without user confirmation
+  autoApprove?: boolean;
 }
 
 export const CTI_HOME = process.env.CTI_HOME || path.join(os.homedir(), ".claude-to-im");
@@ -87,6 +89,7 @@ export function loadConfig(): Config {
       env.get("CTI_DISCORD_ALLOWED_CHANNELS")
     ),
     discordAllowedGuilds: splitCsv(env.get("CTI_DISCORD_ALLOWED_GUILDS")),
+    autoApprove: env.get("CTI_AUTO_APPROVE") === "true",
   };
 }
 

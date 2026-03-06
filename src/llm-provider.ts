@@ -174,14 +174,17 @@ function buildPrompt(
 
 export class SDKLLMProvider implements LLMProvider {
   private cliPath: string | undefined;
+  private autoApprove: boolean;
 
-  constructor(private pendingPerms: PendingPermissions, cliPath?: string) {
+  constructor(private pendingPerms: PendingPermissions, cliPath?: string, autoApprove = false) {
     this.cliPath = cliPath;
+    this.autoApprove = autoApprove;
   }
 
   streamChat(params: StreamChatParams): ReadableStream<string> {
     const pendingPerms = this.pendingPerms;
     const cliPath = this.cliPath;
+    const autoApprove = this.autoApprove;
 
     return new ReadableStream({
       start(controller) {
@@ -202,6 +205,12 @@ export class SDKLLMProvider implements LLMProvider {
                   input: Record<string, unknown>,
                   opts: { toolUseID: string; suggestions?: string[] },
                 ): Promise<PermissionResult> => {
+                  // Auto-approve if configured (useful for channels without
+                  // interactive permission UI, e.g. Feishu WebSocket mode)
+                  if (autoApprove) {
+                    return { behavior: 'allow' as const, updatedInput: input };
+                  }
+
                   // Emit permission_request SSE event for the bridge
                   controller.enqueue(
                     sseEvent('permission_request', {
