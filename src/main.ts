@@ -17,7 +17,8 @@ import type { LLMProvider } from 'claude-to-im/src/lib/bridge/host.js';
 import { loadConfig, configToSettings, CTI_HOME, HOST_PROFILE } from './config.js';
 import type { Config } from './config.js';
 import { JsonFileStore } from './store.js';
-import { SDKLLMProvider, resolveClaudeCliPath } from './llm-provider.js';
+import { SDKLLMProvider, resolveClaudeCliPath, resolveGeminiCliPath } from './llm-provider.js';
+import { GeminiProvider } from './gemini-provider.js';
 import { PendingPermissions } from './permission-gateway.js';
 import { setupLogger } from './logger.js';
 
@@ -28,12 +29,26 @@ const LOG_PREFIX = HOST_PROFILE.logPrefix;
 
 /**
  * Resolve the LLM provider based on the runtime setting.
- * - 'claude' (default): uses Claude Code SDK via SDKLLMProvider
+ * - 'claude': uses Claude Code SDK via SDKLLMProvider
+ * - 'gemini': uses Gemini CLI via GeminiProvider
  * - 'codex': uses @openai/codex-sdk via CodexProvider
- * - 'auto': tries Claude first, falls back to Codex
+ * - 'auto': tries Gemini, then Claude, falls back to Codex
  */
 async function resolveProvider(config: Config, pendingPerms: PendingPermissions): Promise<LLMProvider> {
   const runtime = config.runtime;
+
+  if (runtime === 'gemini') {
+    const cliPath = resolveGeminiCliPath();
+    if (!cliPath) {
+      console.error(
+        `[${LOG_PREFIX}] FATAL: Cannot find the \`gemini\` CLI executable.\n` +
+        '  Fix: Install Gemini CLI or set CTI_GEMINI_EXECUTABLE=/path/to/gemini',
+      );
+      process.exit(1);
+    }
+    console.log(`[${LOG_PREFIX}] Using Gemini CLI: ${cliPath}`);
+    return new GeminiProvider(cliPath, config.autoApprove);
+  }
 
   if (runtime === 'codex') {
     const { CodexProvider } = await import('./codex-provider.js');
@@ -41,18 +56,25 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
   }
 
   if (runtime === 'auto') {
-    const cliPath = resolveClaudeCliPath();
-    if (cliPath) {
-      console.log(`[${LOG_PREFIX}] Auto: using Claude CLI at ${cliPath}`);
-      return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
+    const geminiPath = resolveGeminiCliPath();
+    if (geminiPath) {
+      console.log(`[${LOG_PREFIX}] Auto: using Gemini CLI at ${geminiPath}`);
+      process.env.CTI_RUNTIME = 'gemini'; // Set so provider knows how to call it
+      return new GeminiProvider(geminiPath, config.autoApprove);
     }
-    console.log(`[${LOG_PREFIX}] Auto: Claude CLI not found, falling back to Codex`);
+    const claudePath = resolveClaudeCliPath();
+    if (claudePath) {
+      console.log(`[${LOG_PREFIX}] Auto: using Claude CLI at ${claudePath}`);
+      return new SDKLLMProvider(pendingPerms, claudePath, config.autoApprove);
+    }
+    console.log(`[${LOG_PREFIX}] Auto: neither Gemini nor Claude CLI found, falling back to Codex`);
     const { CodexProvider } = await import('./codex-provider.js');
     return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false);
   }
 
   // Default: claude
   const cliPath = resolveClaudeCliPath();
+
   if (!cliPath) {
     console.error(
       `[${LOG_PREFIX}] FATAL: Cannot find the \`claude\` CLI executable.\n` +

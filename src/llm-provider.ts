@@ -25,6 +25,7 @@ const ENV_WHITELIST = new Set([
   'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
   'SSH_AUTH_SOCK',
+  'GOOGLE_API_KEY', 'GEMINI_API_KEY',
 ]);
 
 /** Prefixes that are always stripped (even in inherit mode). */
@@ -35,7 +36,7 @@ const ENV_ALWAYS_STRIP = ['CLAUDECODE'];
  *
  * CTI_ENV_ISOLATION (default "strict"):
  *   "strict"  — only whitelist + CTI_* + ANTHROPIC_* from config.env
- *   "inherit" — full parent env minus CLAUDECODE
+ *   "inherit" — full parent env minus CLAUDECODE/GEMINI
  */
 export function buildSubprocessEnv(): Record<string, string> {
   const mode = process.env.CTI_ENV_ISOLATION || 'strict';
@@ -45,7 +46,7 @@ export function buildSubprocessEnv(): Record<string, string> {
     // Pass everything except always-stripped vars
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined) continue;
-      if (ENV_ALWAYS_STRIP.includes(k)) continue;
+      if (ENV_ALWAYS_STRIP.some(s => k.startsWith(s))) continue;
       out[k] = v;
     }
   } else {
@@ -56,19 +57,26 @@ export function buildSubprocessEnv(): Record<string, string> {
       // Pass through CTI_* so skill config is available
       if (k.startsWith('CTI_')) { out[k] = v; continue; }
     }
-    // ANTHROPIC_* should come from config.env, not parent process.
-    // Only pass them if CTI_ANTHROPIC_PASSTHROUGH is explicitly set.
+    // ANTHROPIC_* / GOOGLE_* should come from config.env, not parent process.
+    // Only pass them if CTI_PASSTHROUGH is explicitly set.
     if (process.env.CTI_ANTHROPIC_PASSTHROUGH === 'true') {
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && k.startsWith('ANTHROPIC_')) out[k] = v;
       }
     }
-
-    // In codex/auto mode, pass through OPENAI_* / CODEX_* env vars
-    const runtime = process.env.CTI_RUNTIME || 'claude';
-    if (runtime === 'codex' || runtime === 'auto') {
+    if (process.env.CTI_GOOGLE_PASSTHROUGH === 'true') {
       for (const [k, v] of Object.entries(process.env)) {
-        if (v !== undefined && (k.startsWith('OPENAI_') || k.startsWith('CODEX_'))) out[k] = v;
+        if (v !== undefined && k.startsWith('GOOGLE_')) out[k] = v;
+      }
+    }
+    if (process.env.CTI_GEMINI_API_KEY) out.GEMINI_API_KEY = process.env.CTI_GEMINI_API_KEY;
+    if (process.env.CTI_GOOGLE_API_KEY) out.GOOGLE_API_KEY = process.env.CTI_GOOGLE_API_KEY;
+
+    // In codex/gemini/auto mode, pass through relevant env vars
+    const runtime = process.env.CTI_RUNTIME || 'claude';
+    if (runtime === 'codex' || runtime === 'gemini' || runtime === 'auto') {
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && (k.startsWith('OPENAI_') || k.startsWith('CODEX_') || k.startsWith('GOOGLE_') || k.startsWith('GEMINI_'))) out[k] = v;
       }
     }
   }
@@ -76,7 +84,7 @@ export function buildSubprocessEnv(): Record<string, string> {
   return out;
 }
 
-// ── Claude CLI path resolution ──
+// ── CLI path resolution ──
 
 function isExecutable(p: string): boolean {
   try {
@@ -120,6 +128,27 @@ export function resolveClaudeCliPath(): string | undefined {
       ];
   for (const p of candidates) {
     if (p && isExecutable(p)) return p;
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolve the path to the `gemini` CLI executable.
+ */
+export function resolveGeminiCliPath(): string | undefined {
+  // 1. Explicit env var
+  const fromEnv = process.env.CTI_GEMINI_EXECUTABLE;
+  if (fromEnv && isExecutable(fromEnv)) return fromEnv;
+
+  // 2. Platform-specific command
+  const isWindows = process.platform === 'win32';
+  const cmd = isWindows ? 'where gemini' : 'which gemini';
+  try {
+    const resolved = execSync(cmd, { encoding: 'utf-8', timeout: 3000 }).trim().split('\n')[0];
+    if (resolved && isExecutable(resolved)) return resolved;
+  } catch {
+    // not found in PATH
   }
 
   return undefined;
@@ -292,11 +321,15 @@ function handleMessage(
     }
 
     case 'assistant': {
-      // Full assistant message — extract content blocks
-      // Text deltas are already handled by stream_event; this handles
-      // any tool_use blocks not caught by partial streaming.
+      // Full assistant message — extract content blocks.
+      // Most normal replies arrive as text deltas via stream_event, but
+      // some terminal errors (for example rate limits) only appear here.
       if (msg.message?.content) {
         for (const block of msg.message.content) {
+          if (block.type === 'text' && typeof block.text === 'string') {
+            controller.enqueue(sseEvent('text', block.text));
+            continue;
+          }
           if (block.type === 'tool_use') {
             controller.enqueue(
               sseEvent('tool_use', {

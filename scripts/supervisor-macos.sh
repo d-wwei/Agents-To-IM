@@ -43,6 +43,15 @@ build_env_dict() {
       ;;
   esac
   case "$runtime" in
+    gemini|auto)
+      for var in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_CLOUD_PROJECT GOOGLE_GENAI_USE_VERTEXAI; do
+        local val="${!var:-}"
+        [ -z "$val" ] && continue
+        dict+="${indent}<key>${var}</key>\n${indent}<string>${val}</string>\n"
+      done
+      ;;
+  esac
+  case "$runtime" in
     claude|auto)
       if [ "${CTI_ANTHROPIC_PASSTHROUGH:-}" = "true" ]; then
         for var in ANTHROPIC_API_KEY ANTHROPIC_BASE_URL; do
