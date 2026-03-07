@@ -1,6 +1,6 @@
 # Claude/Codex/Gemini-to-IM
 
-把 AI 编程宿主桥接到 IM 平台，并为 Claude、Codex、Gemini 以及后续宿主提供彼此隔离的安装方式。
+把 AI 编程宿主桥接到 IM 平台（Telegram、Discord、飞书、QQ），并为 Claude、Codex、Gemini 以及后续宿主提供彼此隔离的安装方式。
 
 [English](README.md)
 
@@ -96,10 +96,10 @@ bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
 
 ## 语音与音频能力
 
-- 飞书入站语音消息在桥接层处理，不会只作为“不透明附件”丢给 runtime。
+- 飞书入站语音消息在桥接层处理，不会只作为"不透明附件"丢给 runtime。
 - bridge 会先下载语音，必要时把 Ogg/Opus 转成 16 kHz PCM，再调用飞书 STT，然后才把文本交给 Codex、Claude 或 Gemini。
 - 如果飞书 STT 限频或不可用，并且配置了 `CTI_OPENAI_API_KEY`，bridge 可以自动回退到 OpenAI Whisper 做语音转写。
-- 当用户明确要求“语音回复”时，bridge 可以选配 ElevenLabs TTS，并把生成的音频作为 Feishu 文件附件发回去。
+- 当用户明确要求"语音回复"时，bridge 可以选配 ElevenLabs TTS，并把生成的音频作为 Feishu 文件附件发回去。
 
 ## 依赖与 Provider API Key
 

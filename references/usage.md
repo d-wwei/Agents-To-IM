@@ -150,3 +150,14 @@ Behavior summary:
 - `/unarchive` restores an archived session
 
 These commands are handled at the bridge layer, so they work consistently across Claude, Codex, and Gemini host variants.
+
+### QQ notes
+
+QQ currently supports **C2C private chat only**:
+- No inline approval buttons — permissions use text `/perm ...` commands
+- No streaming preview
+- Image inbound only (no image replies)
+- No group/channel support yet
+- Required config: `CTI_QQ_APP_ID`, `CTI_QQ_APP_SECRET` (obtain from https://q.qq.com/qqbot/openclaw)
+- `CTI_QQ_ALLOWED_USERS` takes `user_openid` values, not QQ numbers
+- Set `CTI_QQ_IMAGE_ENABLED=false` if the provider doesn't support image input

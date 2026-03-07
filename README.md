@@ -1,6 +1,6 @@
 # Claude/Codex/Gemini-to-IM
 
-Bridge AI coding hosts to IM platforms, with isolated installs for Claude, Codex, Gemini, and future hosts.
+Bridge AI coding hosts to IM platforms (Telegram, Discord, Feishu/Lark, QQ), with isolated installs for Claude, Codex, Gemini, and future hosts.
 
 [中文文档](README_CN.md)
 
