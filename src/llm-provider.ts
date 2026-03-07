@@ -7,7 +7,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { execSync, execFileSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
@@ -15,8 +14,6 @@ import type { LLMProvider, StreamChatParams, FileAttachment } from 'claude-to-im
 import type { PendingPermissions } from './permission-gateway.js';
 
 import { sseEvent } from './sse-utils.js';
-
-const require = createRequire(import.meta.url);
 
 // ── Environment isolation ──
 
@@ -313,9 +310,13 @@ export class SDKLLMProvider implements LLMProvider {
               prompt: prompt as Parameters<typeof query>[0]['prompt'],
               options: queryOptions as Parameters<typeof query>[0]['options'],
             });
+            const streamState: StreamMessageState = {
+              sawTextDelta: false,
+              seenToolUseIds: new Set<string>(),
+            };
 
             for await (const msg of q) {
-              handleMessage(msg, controller);
+              handleMessage(msg, controller, streamState);
             }
 
             controller.close();
@@ -333,9 +334,15 @@ export class SDKLLMProvider implements LLMProvider {
   }
 }
 
+interface StreamMessageState {
+  sawTextDelta: boolean;
+  seenToolUseIds: Set<string>;
+}
+
 function handleMessage(
   msg: SDKMessage,
   controller: ReadableStreamDefaultController<string>,
+  state: StreamMessageState,
 ): void {
   switch (msg.type) {
     case 'stream_event': {
@@ -345,12 +352,14 @@ function handleMessage(
         event.delta.type === 'text_delta'
       ) {
         // Emit delta text — the bridge accumulates on its side
+        state.sawTextDelta = true;
         controller.enqueue(sseEvent('text', event.delta.text));
       }
       if (
         event.type === 'content_block_start' &&
         event.content_block.type === 'tool_use'
       ) {
+        state.seenToolUseIds.add(event.content_block.id);
         controller.enqueue(
           sseEvent('tool_use', {
             id: event.content_block.id,
@@ -369,10 +378,13 @@ function handleMessage(
       if (msg.message?.content) {
         for (const block of msg.message.content) {
           if (block.type === 'text' && typeof block.text === 'string') {
+            if (state.sawTextDelta) continue;
             controller.enqueue(sseEvent('text', block.text));
             continue;
           }
           if (block.type === 'tool_use') {
+            if (state.seenToolUseIds.has(block.id)) continue;
+            state.seenToolUseIds.add(block.id);
             controller.enqueue(
               sseEvent('tool_use', {
                 id: block.id,
@@ -452,3 +464,7 @@ function handleMessage(
       break;
   }
 }
+
+export const __testOnly = {
+  handleMessage,
+};
