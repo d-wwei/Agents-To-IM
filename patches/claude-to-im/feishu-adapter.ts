@@ -69,6 +69,19 @@ type FeishuMessageEventData = {
   };
 };
 
+type FeishuCardActionEventData = {
+  open_id?: string;
+  user_id?: string;
+  open_message_id?: string;
+  tenant_key?: string;
+  action?: {
+    tag?: string;
+    value?: Record<string, unknown>;
+    option?: string;
+    timezone?: string;
+  };
+};
+
 
 /** MIME type guesses by message_type. */
 const MIME_BY_TYPE: Record<string, string> = {
@@ -126,13 +139,15 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     this.running = true;
 
-    // Create EventDispatcher and register event handlers.
-    // NOTE: card.action.trigger requires HTTP webhook (not supported via WSClient).
-    // Openclaw uses an HTTP server for card callbacks — CodePilot is a desktop app
-    // without a public endpoint, so we rely on text-based /perm commands instead.
+    // Register both inbound chat messages and card action callbacks.
+    // Feishu long-connection callback delivery is only available when the app
+    // is configured for "Receive events/callbacks through persistent connection".
     const dispatcher = new lark.EventDispatcher({}).register({
       'im.message.receive_v1': async (data) => {
         await this.handleIncomingEvent(data as FeishuMessageEventData);
+      },
+      'card.action.trigger': async (data) => {
+        await this.handleCardActionEvent(data as FeishuCardActionEventData);
       },
     });
 
@@ -357,13 +372,9 @@ export class FeishuAdapter extends BaseChannelAdapter {
   // ── Permission card (with real action buttons) ─────────────
 
   /**
-   * Send a permission card with Feishu card action buttons.
-   * Uses multi_mode + send_message buttons: when clicked, Feishu client
-   * automatically sends the /perm command as a text message, which is
-   * picked up by our existing im.message.receive_v1 handler.
-   *
-   * This achieves "button-like" UX without needing an HTTP webhook for
-   * card.action.trigger events (which aren't supported over WSClient).
+   * Send a permission card with standard Feishu card buttons.
+   * Each button carries a structured `value` payload which is consumed by
+   * the card.action.trigger callback handler.
    */
   private async sendPermissionCard(
     chatId: string,
@@ -375,7 +386,12 @@ export class FeishuAdapter extends BaseChannelAdapter {
     }
 
     // Build button data and command text
-    const permButtons: Array<{ text: string; command: string; type: 'primary' | 'default' | 'danger' }> = [];
+    const permButtons: Array<{
+      text: string;
+      command: string;
+      type: 'primary' | 'default' | 'danger';
+      callbackData: string;
+    }> = [];
     const permCommands: string[] = [];
 
     inlineButtons.flat().forEach((btn) => {
@@ -392,41 +408,38 @@ export class FeishuAdapter extends BaseChannelAdapter {
         if (action === 'allow') buttonType = 'primary';
         if (action === 'deny') buttonType = 'danger';
 
-        permButtons.push({ text: btn.text, command, type: buttonType });
+        permButtons.push({ text: btn.text, command, type: buttonType, callbackData: btn.callbackData });
       }
     });
 
-    // Build buttons with multi_mode + send_message
     const buttonElements = permButtons.map((btn) => ({
       tag: 'button',
       text: { tag: 'plain_text', content: btn.text },
       type: btn.type,
-      multi_mode: {
-        mode: 'send_message',
-        value: btn.command,
+      value: {
+        callbackData: btn.callbackData,
+        chatId,
       },
     }));
 
-    // Schema 2.0 card with action buttons + fallback commands
+    // Use the classic interactive-card shape (`config/header/elements`).
+    // The current Feishu API rejects `tag: action` inside schema 2.0 cards.
     const cardJson = JSON.stringify({
-      schema: '2.0',
       config: { wide_screen_mode: true },
       header: {
         template: 'orange',
         title: { tag: 'plain_text', content: '🔐 Permission Required' },
       },
-      body: {
-        elements: [
-          { tag: 'markdown', content: text },
-          { tag: 'hr' },
-          ...(buttonElements.length > 0 ? [{
-            tag: 'action',
-            actions: buttonElements,
-          }] : []),
-          { tag: 'hr' },
-          { tag: 'markdown', content: '**Fallback: copy & send one of these commands:**\n' + permCommands.join('  ·  ') },
-        ],
-      },
+      elements: [
+        { tag: 'markdown', content: text },
+        { tag: 'hr' },
+        ...(buttonElements.length > 0 ? [{
+          tag: 'action',
+          actions: buttonElements,
+        }] : []),
+        { tag: 'hr' },
+        { tag: 'markdown', content: '**Fallback: copy & send one of these commands:**\n' + permCommands.join('\n') },
+      ],
     });
 
     try {
@@ -514,6 +527,39 @@ export class FeishuAdapter extends BaseChannelAdapter {
     } catch (err) {
       console.error(
         '[feishu-adapter] Unhandled error in event handler:',
+        err instanceof Error ? err.stack || err.message : err,
+      );
+    }
+  }
+
+  private async handleCardActionEvent(data: FeishuCardActionEventData): Promise<void> {
+    try {
+      const value = data.action?.value;
+      const callbackData = typeof value?.callbackData === 'string' ? value.callbackData : '';
+      const chatId = typeof value?.chatId === 'string' ? value.chatId : '';
+      const userId = data.open_id || data.user_id || '';
+
+      if (!callbackData || !chatId) {
+        console.warn('[feishu-adapter] Ignoring card action without callbackData/chatId');
+        return;
+      }
+
+      const inbound: InboundMessage = {
+        messageId: data.open_message_id || `card-action-${Date.now()}`,
+        address: {
+          channelType: 'feishu',
+          chatId,
+          userId,
+        },
+        text: callbackData,
+        timestamp: Date.now(),
+        callbackData,
+      };
+
+      this.enqueue(inbound);
+    } catch (err) {
+      console.error(
+        '[feishu-adapter] Unhandled error in card action handler:',
         err instanceof Error ? err.stack || err.message : err,
       );
     }
