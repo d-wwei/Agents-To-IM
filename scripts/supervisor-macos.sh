@@ -31,7 +31,7 @@ build_env_dict() {
   # Forward runtime-specific API keys
   local runtime
   runtime=$(grep "^CTI_RUNTIME=" "$CTI_HOME/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" | tr -d '"' || true)
-  runtime="${runtime:-claude}"
+  runtime="${runtime:-$DEFAULT_RUNTIME}"
 
   case "$runtime" in
     codex|auto)

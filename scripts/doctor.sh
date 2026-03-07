@@ -39,8 +39,8 @@ else
 fi
 
 # --- Read runtime setting ---
-CTI_RUNTIME=$(grep "^CTI_RUNTIME=" "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" | tr -d '"')
-CTI_RUNTIME="${CTI_RUNTIME:-claude}"
+CTI_RUNTIME=$((grep "^CTI_RUNTIME=" "$CONFIG_FILE" 2>/dev/null || true) | head -1 | cut -d= -f2- | tr -d "'" | tr -d '"')
+CTI_RUNTIME="${CTI_RUNTIME:-$DEFAULT_RUNTIME}"
 echo "Runtime: $CTI_RUNTIME"
 echo ""
 

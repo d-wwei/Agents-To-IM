@@ -84,8 +84,12 @@ export function loadConfig(): Config {
     // Config file doesn't exist yet — use defaults
   }
 
-  const rawRuntime = env.get("CTI_RUNTIME") || "claude";
-  const runtime = (["claude", "codex", "gemini", "auto"].includes(rawRuntime) ? rawRuntime : "claude") as Config["runtime"];
+  const hostDefaultRuntime =
+    HOST_PROFILE.host === "codex" ? "codex"
+      : HOST_PROFILE.host === "gemini" ? "gemini"
+        : "claude";
+  const rawRuntime = env.get("CTI_RUNTIME") || hostDefaultRuntime;
+  const runtime = (["claude", "codex", "gemini", "auto"].includes(rawRuntime) ? rawRuntime : hostDefaultRuntime) as Config["runtime"];
 
   return {
     runtime,

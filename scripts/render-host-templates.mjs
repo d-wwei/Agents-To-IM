@@ -110,25 +110,29 @@ function getRuntimeNotes(host) {
       return [
         '  - `claude` — recommended in this host; uses Claude Code CLI + Claude Agent SDK',
         '  - `codex` — optional alternative; uses OpenAI Codex SDK',
-        '  - `auto` — prefers Claude first, then falls back to Codex',
+        '  - `gemini` — optional alternative; uses Gemini CLI',
+        '  - `auto` — tries Gemini first, then Claude, then falls back to Codex',
       ].join('\n');
     case 'codex':
       return [
         '  - `claude` — optional alternative; uses Claude CLI + Claude Agent SDK',
         '  - `codex` — recommended in this host; uses OpenAI Codex SDK',
-        '  - `auto` — prefers Claude first, then falls back to Codex if needed',
+        '  - `gemini` — optional alternative; uses Gemini CLI',
+        '  - `auto` — tries Gemini first, then Claude, then falls back to Codex if needed',
       ].join('\n');
     case 'gemini':
       return [
         '  - `claude` — available when Claude CLI is installed',
         '  - `codex` — available when Codex CLI / SDK is installed',
-        '  - `auto` — tries the Claude path first, then falls back to Codex if needed',
+        '  - `gemini` — recommended in this host; uses Gemini CLI',
+        '  - `auto` — tries Gemini first, then Claude, then falls back to Codex if needed',
       ].join('\n');
     default:
       return [
         '  - `claude` — uses Claude CLI + Claude Agent SDK',
         '  - `codex` — uses OpenAI Codex SDK',
-        '  - `auto` — tries the Claude path first, then falls back to Codex if needed',
+        '  - `gemini` — uses Gemini CLI',
+        '  - `auto` — tries Gemini first, then Claude, then falls back to Codex if needed',
       ].join('\n');
   }
 }
@@ -139,26 +143,55 @@ function getConfigRuntimeNotes(host) {
       return [
         '#   claude (default) — recommended in this host; uses Claude Code CLI + @anthropic-ai/claude-agent-sdk',
         '#   codex  — optional alternative; uses @openai/codex-sdk',
-        '#   auto   — prefers Claude first, then falls back to Codex if CLI not found',
+        '#   gemini — optional alternative; uses Gemini CLI',
+        '#   auto   — tries Gemini first, then Claude, then falls back to Codex if CLI not found',
       ].join('\n');
     case 'codex':
       return [
         '#   claude (optional) — uses Claude CLI + @anthropic-ai/claude-agent-sdk',
         '#   codex  (recommended) — uses @openai/codex-sdk',
-        '#   auto   — prefers Claude first, then falls back to Codex if CLI not found',
+        '#   gemini — optional alternative; uses Gemini CLI',
+        '#   auto   — tries Gemini first, then Claude, then falls back to Codex if CLI not found',
       ].join('\n');
     case 'gemini':
       return [
         '#   claude — available when Claude CLI is installed',
         '#   codex  — available when @openai/codex-sdk / Codex CLI is configured',
-        '#   auto   — tries the Claude path first, then falls back to Codex if needed',
+        '#   gemini (recommended) — uses Gemini CLI',
+        '#   auto   — tries Gemini first, then Claude, then falls back to Codex if needed',
       ].join('\n');
     default:
       return [
         '#   claude — uses Claude CLI + @anthropic-ai/claude-agent-sdk',
         '#   codex  — uses @openai/codex-sdk',
-        '#   auto   — tries Claude first, then falls back to Codex if CLI not found',
+        '#   gemini — uses Gemini CLI',
+        '#   auto   — tries Gemini first, then Claude, then falls back to Codex if CLI not found',
       ].join('\n');
+  }
+}
+
+function getRuntimeOptions(host) {
+  switch (host) {
+    case 'claude':
+      return '`claude` (default), `codex`, `gemini`, `auto`';
+    case 'codex':
+      return '`claude`, `codex` (default), `gemini`, `auto`';
+    case 'gemini':
+      return '`claude`, `codex`, `gemini` (default), `auto`';
+    default:
+      return '`claude`, `codex`, `gemini`, `auto`';
+  }
+}
+
+function getDefaultRuntime(host) {
+  switch (host) {
+    case 'codex':
+      return 'codex';
+    case 'gemini':
+      return 'gemini';
+    case 'claude':
+    default:
+      return 'claude';
   }
 }
 
@@ -223,7 +256,10 @@ if (repoHome) {
     HOST: host,
     HOST_DISPLAY: hostDisplay,
     SKILL_COMMAND: skillCommand,
+    DEFAULT_RUNTIME: getDefaultRuntime(host),
     RUNTIME_HOME: runtimeHome,
+    RUNTIME_OPTIONS_EN: getRuntimeOptions(host),
+    RUNTIME_OPTIONS_PLAIN: 'claude | codex | gemini | auto',
     HOST_SKILLS_DIR: getHostSkillsDir(host),
     VERIFY_INSTALLATION_EN: verify.en,
     VERIFY_INSTALLATION_ZH: verify.zh,

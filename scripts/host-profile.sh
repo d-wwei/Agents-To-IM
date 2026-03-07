@@ -12,6 +12,15 @@ host_title_case() {
   printf '%s' "$out"
 }
 
+default_runtime_for_host() {
+  local host="${1:-}"
+  case "$host" in
+    codex) printf '%s' "codex" ;;
+    gemini) printf '%s' "gemini" ;;
+    *) printf '%s' "claude" ;;
+  esac
+}
+
 infer_host_from_skill_command() {
   local value="${1:-}"
   case "$value" in
@@ -39,6 +48,7 @@ init_host_profile() {
   HOST_NAME="${derived:-claude}"
   HOST_DISPLAY_NAME="$(host_title_case "$HOST_NAME")"
   SKILL_COMMAND="${CTI_SKILL_COMMAND:-${HOST_NAME}-to-im}"
+  DEFAULT_RUNTIME="$(default_runtime_for_host "$HOST_NAME")"
   CTI_HOME_DEFAULT="$HOME/.${SKILL_COMMAND}"
   LAUNCHD_LABEL_DEFAULT="com.${SKILL_COMMAND}.bridge"
   SERVICE_NAME_DEFAULT="$(host_title_case "$HOST_NAME")ToIMBridge"
