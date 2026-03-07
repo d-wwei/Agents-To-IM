@@ -543,6 +543,93 @@ describe('CodexProvider image input', () => {
     assert.equal(parts[2].type, 'local_image');
     assert.ok(parts[2].path.endsWith('.jpg'));
   });
+
+  it('passes local file paths in text input for non-image attachments', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions());
+
+    let capturedInput: unknown;
+    const mockThread = {
+      runStreamed: (input: unknown) => {
+        capturedInput = input;
+        return {
+          events: (async function* () {
+            yield { type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } };
+          })(),
+        };
+      },
+    };
+    (provider as any).sdk = {
+      Codex: class { constructor() {} },
+    };
+    (provider as any).codex = {
+      startThread: () => mockThread,
+    };
+
+    const stream = provider.streamChat({
+      prompt: 'Review these files',
+      sessionId: 'file-session',
+      files: [
+        makeFile('text/plain', 'aGVsbG8=', 'notes.txt'),
+        makeFile('application/json', 'e30=', 'payload.json'),
+      ],
+    });
+
+    await collectStream(stream);
+
+    assert.equal(typeof capturedInput, 'string');
+    const text = capturedInput as string;
+    assert.match(text, /^Review these files/);
+    assert.match(text, /Attached local files:/);
+    assert.match(text, /@.*notes\.txt/);
+    assert.match(text, /@.*payload\.json/);
+  });
+
+  it('keeps images as local_image parts and appends non-image paths to the text part', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions());
+
+    let capturedInput: unknown;
+    const mockThread = {
+      runStreamed: (input: unknown) => {
+        capturedInput = input;
+        return {
+          events: (async function* () {
+            yield { type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } };
+          })(),
+        };
+      },
+    };
+    (provider as any).sdk = {
+      Codex: class { constructor() {} },
+    };
+    (provider as any).codex = {
+      startThread: () => mockThread,
+    };
+
+    const stream = provider.streamChat({
+      prompt: 'Compare these inputs',
+      sessionId: 'mixed-file-session',
+      files: [
+        makeFile('image/png', 'cG5n', 'a.png'),
+        makeFile('text/plain', 'dGV4dA==', 'readme.md'),
+      ],
+    });
+
+    await collectStream(stream);
+
+    assert.ok(Array.isArray(capturedInput));
+    const parts = capturedInput as Array<Record<string, string>>;
+    assert.equal(parts.length, 2);
+    assert.equal(parts[0].type, 'text');
+    assert.match(parts[0].text, /^Compare these inputs/);
+    assert.match(parts[0].text, /Attached local files:/);
+    assert.match(parts[0].text, /@.*readme\.md/);
+    assert.equal(parts[1].type, 'local_image');
+    assert.ok(parts[1].path.endsWith('.png'));
+  });
 });
 
 // ── Error event tests ───────────────────────────────────────

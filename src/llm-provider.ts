@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -202,6 +203,57 @@ const SUPPORTED_IMAGE_TYPES = new Set<string>([
   'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
 ]);
 
+function sanitizeAttachmentBaseName(name?: string): string {
+  const raw = (name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
+  return raw || 'attachment';
+}
+
+function getAttachmentExtension(file: FileAttachment): string {
+  const fromName = path.extname(file.name || '');
+  if (fromName) return fromName;
+  return '.bin';
+}
+
+function buildPromptWithAttachmentPaths(text: string, attachmentPaths: string[]): string {
+  if (attachmentPaths.length === 0) return text;
+
+  const sections = [text.trim(), 'Attached local files:'];
+  for (const filePath of attachmentPaths) {
+    sections.push(`@${filePath}`);
+  }
+
+  return sections.filter(Boolean).join('\n\n');
+}
+
+function writeNonImageAttachmentTempFiles(files: FileAttachment[] | undefined): { paths: string[]; cleanup: () => void } {
+  const nonImageFiles = files?.filter((file) => !SUPPORTED_IMAGE_TYPES.has(file.type)) ?? [];
+  if (nonImageFiles.length === 0) {
+    return { paths: [], cleanup: () => {} };
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-to-im-'));
+  const paths: string[] = [];
+
+  for (const file of nonImageFiles) {
+    const safeBase = sanitizeAttachmentBaseName(file.name);
+    const ext = getAttachmentExtension(file);
+    const filePath = path.join(tmpDir, `${safeBase}${safeBase.endsWith(ext) ? '' : ext}`);
+    fs.writeFileSync(filePath, Buffer.from(file.data, 'base64'));
+    paths.push(filePath);
+  }
+
+  return {
+    paths,
+    cleanup: () => {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore temp cleanup failures
+      }
+    },
+  };
+}
+
 /**
  * Build a prompt for query(). When files are present, returns an async
  * iterable that yields a single SDKUserMessage with multi-modal content
@@ -210,9 +262,16 @@ const SUPPORTED_IMAGE_TYPES = new Set<string>([
 function buildPrompt(
   text: string,
   files?: FileAttachment[],
-): string | AsyncIterable<{ type: 'user'; message: { role: 'user'; content: unknown[] }; parent_tool_use_id: null; session_id: string }> {
+): {
+  prompt: string | AsyncIterable<{ type: 'user'; message: { role: 'user'; content: unknown[] }; parent_tool_use_id: null; session_id: string }>;
+  cleanup: () => void;
+} {
+  const { paths: attachmentPaths, cleanup } = writeNonImageAttachmentTempFiles(files);
+  const promptText = buildPromptWithAttachmentPaths(text, attachmentPaths);
   const imageFiles = files?.filter(f => SUPPORTED_IMAGE_TYPES.has(f.type));
-  if (!imageFiles || imageFiles.length === 0) return text;
+  if (!imageFiles || imageFiles.length === 0) {
+    return { prompt: promptText, cleanup };
+  }
 
   const contentBlocks: unknown[] = [];
 
@@ -227,8 +286,8 @@ function buildPrompt(
     });
   }
 
-  if (text.trim()) {
-    contentBlocks.push({ type: 'text', text });
+  if (promptText.trim()) {
+    contentBlocks.push({ type: 'text', text: promptText });
   }
 
   const msg = {
@@ -238,7 +297,10 @@ function buildPrompt(
     session_id: '',
   };
 
-  return (async function* () { yield msg; })();
+  return {
+    prompt: (async function* () { yield msg; })(),
+    cleanup,
+  };
 }
 
 export class SDKLLMProvider implements LLMProvider {
@@ -258,6 +320,7 @@ export class SDKLLMProvider implements LLMProvider {
     return new ReadableStream({
       start(controller) {
         (async () => {
+          let cleanupPromptFiles = () => {};
           try {
             const cleanEnv = buildSubprocessEnv();
 
@@ -306,9 +369,10 @@ export class SDKLLMProvider implements LLMProvider {
               queryOptions.pathToClaudeCodeExecutable = cliPath;
             }
 
-            const prompt = buildPrompt(params.prompt, params.files);
+            const promptInput = buildPrompt(params.prompt, params.files);
+            cleanupPromptFiles = promptInput.cleanup;
             const q = query({
-              prompt: prompt as Parameters<typeof query>[0]['prompt'],
+              prompt: promptInput.prompt as Parameters<typeof query>[0]['prompt'],
               options: queryOptions as Parameters<typeof query>[0]['options'],
             });
             const streamState: StreamMessageState = {
@@ -328,6 +392,8 @@ export class SDKLLMProvider implements LLMProvider {
             // Send simplified but actionable summary to IM
             controller.enqueue(sseEvent('error', message));
             controller.close();
+          } finally {
+            cleanupPromptFiles();
           }
         })();
       },
@@ -467,5 +533,6 @@ function handleMessage(
 }
 
 export const __testOnly = {
+  buildPrompt,
   handleMessage,
 };

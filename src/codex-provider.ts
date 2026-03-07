@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { LLMProvider, StreamChatParams } from 'claude-to-im/src/lib/bridge/host.js';
+import type { FileAttachment, LLMProvider, StreamChatParams } from 'claude-to-im/src/lib/bridge/host.js';
 import type { PendingPermissions } from './permission-gateway.js';
 import { sseEvent } from './sse-utils.js';
 
@@ -26,6 +26,69 @@ const MIME_EXT: Record<string, string> = {
   'image/gif': '.gif',
   'image/webp': '.webp',
 };
+
+function sanitizeAttachmentBaseName(name?: string): string {
+  const raw = (name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
+  return raw || 'attachment';
+}
+
+function getAttachmentExtension(file: FileAttachment): string {
+  const fromName = path.extname(file.name || '');
+  if (fromName) return fromName;
+  return MIME_EXT[file.type] || '.bin';
+}
+
+function buildPromptWithAttachmentPaths(prompt: string, attachmentPaths: string[]): string {
+  if (attachmentPaths.length === 0) return prompt;
+
+  const sections = [prompt.trim(), 'Attached local files:'];
+  for (const filePath of attachmentPaths) {
+    sections.push(`@${filePath}`);
+  }
+
+  return sections.filter(Boolean).join('\n\n');
+}
+
+function buildCodexInput(
+  prompt: string,
+  files: FileAttachment[] | undefined,
+  tempFiles: string[],
+): string | Array<Record<string, string>> {
+  const imageFiles = files?.filter((file) => file.type.startsWith('image/')) ?? [];
+  const otherFiles = files?.filter((file) => !file.type.startsWith('image/')) ?? [];
+  const otherFilePaths: string[] = [];
+
+  for (const file of otherFiles) {
+    const safeBase = sanitizeAttachmentBaseName(file.name);
+    const ext = getAttachmentExtension(file);
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `cti-file-${Date.now()}-${Math.random().toString(36).slice(2)}-${safeBase}${safeBase.endsWith(ext) ? '' : ext}`,
+    );
+    fs.writeFileSync(tmpPath, Buffer.from(file.data, 'base64'));
+    tempFiles.push(tmpPath);
+    otherFilePaths.push(tmpPath);
+  }
+
+  const promptWithPaths = buildPromptWithAttachmentPaths(prompt, otherFilePaths);
+  if (imageFiles.length === 0) {
+    return promptWithPaths;
+  }
+
+  const parts: Array<Record<string, string>> = [
+    { type: 'text', text: promptWithPaths },
+  ];
+
+  for (const file of imageFiles) {
+    const ext = MIME_EXT[file.type] || '.png';
+    const tmpPath = path.join(os.tmpdir(), `cti-img-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    fs.writeFileSync(tmpPath, Buffer.from(file.data, 'base64'));
+    tempFiles.push(tmpPath);
+    parts.push({ type: 'local_image', path: tmpPath });
+  }
+
+  return parts;
+}
 
 // All SDK types kept as `any` because @openai/codex-sdk is optional.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -146,29 +209,10 @@ export class CodexProvider implements LLMProvider {
               approvalPolicy,
             };
 
-            // Build input: Codex SDK UserInput supports { type: "text" } and
-            // { type: "local_image", path: string }. We write base64 data to
-            // temp files so the SDK can read them as local images.
-            const imageFiles = params.files?.filter(
-              f => f.type.startsWith('image/')
-            ) ?? [];
-
-            let input: string | Array<Record<string, string>>;
-            if (imageFiles.length > 0) {
-              const parts: Array<Record<string, string>> = [
-                { type: 'text', text: params.prompt },
-              ];
-              for (const file of imageFiles) {
-                const ext = MIME_EXT[file.type] || '.png';
-                const tmpPath = path.join(os.tmpdir(), `cti-img-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-                fs.writeFileSync(tmpPath, Buffer.from(file.data, 'base64'));
-                tempFiles.push(tmpPath);
-                parts.push({ type: 'local_image', path: tmpPath });
-              }
-              input = parts;
-            } else {
-              input = params.prompt;
-            }
+            // Codex SDK supports text and local images only. For non-image
+            // attachments, persist them locally and reference their paths in
+            // the text prompt so the agent can open them itself.
+            const input = buildCodexInput(params.prompt, params.files, tempFiles);
 
             let retryFresh = false;
 
