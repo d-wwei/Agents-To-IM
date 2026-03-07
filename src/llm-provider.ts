@@ -203,12 +203,27 @@ const SUPPORTED_IMAGE_TYPES = new Set<string>([
   'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
 ]);
 
+const MIME_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'text/csv': '.csv',
+  'application/json': '.json',
+  'application/pdf': '.pdf',
+};
+
 function sanitizeAttachmentBaseName(name?: string): string {
   const raw = (name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
   return raw || 'attachment';
 }
 
 function getAttachmentExtension(file: FileAttachment): string {
+  const fromMime = MIME_EXT[file.type];
+  if (fromMime) return fromMime;
   const fromName = path.extname(file.name || '');
   if (fromName) return fromName;
   return '.bin';
@@ -225,16 +240,15 @@ function buildPromptWithAttachmentPaths(text: string, attachmentPaths: string[])
   return sections.filter(Boolean).join('\n\n');
 }
 
-function writeNonImageAttachmentTempFiles(files: FileAttachment[] | undefined): { paths: string[]; cleanup: () => void } {
-  const nonImageFiles = files?.filter((file) => !SUPPORTED_IMAGE_TYPES.has(file.type)) ?? [];
-  if (nonImageFiles.length === 0) {
+function writeAttachmentTempFiles(files: FileAttachment[] | undefined): { paths: string[]; cleanup: () => void } {
+  if (!files || files.length === 0) {
     return { paths: [], cleanup: () => {} };
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-to-im-'));
   const paths: string[] = [];
 
-  for (const file of nonImageFiles) {
+  for (const file of files) {
     const safeBase = sanitizeAttachmentBaseName(file.name);
     const ext = getAttachmentExtension(file);
     const filePath = path.join(tmpDir, `${safeBase}${safeBase.endsWith(ext) ? '' : ext}`);
@@ -266,7 +280,7 @@ function buildPrompt(
   prompt: string | AsyncIterable<{ type: 'user'; message: { role: 'user'; content: unknown[] }; parent_tool_use_id: null; session_id: string }>;
   cleanup: () => void;
 } {
-  const { paths: attachmentPaths, cleanup } = writeNonImageAttachmentTempFiles(files);
+  const { paths: attachmentPaths, cleanup } = writeAttachmentTempFiles(files);
   const promptText = buildPromptWithAttachmentPaths(text, attachmentPaths);
   const imageFiles = files?.filter(f => SUPPORTED_IMAGE_TYPES.has(f.type));
   if (!imageFiles || imageFiles.length === 0) {

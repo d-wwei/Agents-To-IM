@@ -124,6 +124,7 @@ describe('llm-provider prompt building', () => {
     assert.equal(blocks[1].type, 'text');
     assert.match(String(blocks[1].text), /^Review the inputs/);
     assert.match(String(blocks[1].text), /Attached local files:/);
+    assert.match(String(blocks[1].text), /@.*diagram\.png/);
     assert.match(String(blocks[1].text), /@.*readme\.md/);
 
     built.cleanup();
