@@ -14,6 +14,7 @@ Bridge AI coding hosts to IM platforms, with isolated installs for Claude, Codex
 - Separate runtime homes for each host, following the pattern `~/.<host>-to-im`
 - Telegram, Discord, Feishu/Lark, and QQ bridge support
 - Background daemon management, permission approval flow, streaming replies, and persisted sessions
+- Consistent attachment handling across runtimes, including non-image files forwarded as local paths when native file input is unavailable
 
 ## Host Variants
 
@@ -49,8 +50,16 @@ Each install renders host-specific docs and commands into its own skill director
 - For Claude-oriented usage, see the installed `claude-to-im` skill docs
 - For Codex-oriented usage, see the installed `codex-to-im` skill docs
 - For Gemini-oriented usage, see the installed `gemini-to-im` skill docs
+- Release notes: [RELEASE_NOTES.md](RELEASE_NOTES.md)
 - Troubleshooting reference: [references/troubleshooting.md](references/troubleshooting.md)
 - Security model: [SECURITY.md](SECURITY.md)
+
+## Attachment Support
+
+- Feishu/Lark inbound messages can carry images and regular file attachments into the bridge.
+- Gemini already persists attachments to local temp files and passes those paths into the CLI prompt.
+- Codex and Claude Code now follow the same fallback for non-image files: attachments are written to local temp files and referenced by absolute path in the prompt.
+- Images still use native multi-modal input where the target runtime supports it.
 
 ## Built-in Session Management Commands
 
