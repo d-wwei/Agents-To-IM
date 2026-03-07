@@ -60,7 +60,7 @@ build_env_dict() {
           dict+="${indent}<key>${name}</key>\n${indent}<string>${val}</string>\n"
           ;; esac
       done < <(env)
-      ;;
+       ;;
   esac
 
   echo -e "$dict"
