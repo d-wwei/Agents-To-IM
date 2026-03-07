@@ -14,6 +14,7 @@
 - 每个宿主独立的运行时目录，命名规则为 `~/.<host>-to-im`
 - Telegram、Discord、飞书 / Lark 三个平台桥接能力
 - 后台 daemon 管理、权限审批、流式回复、会话持久化等能力
+- 在 runtime 不原生支持普通文件输入时，仍能通过本地路径注入的方式保持一致的附件处理能力
 
 ## 宿主变体
 
@@ -49,8 +50,16 @@ bash scripts/install-host.sh --host gemini
 - Claude 使用说明：安装后的 `claude-to-im` 文档
 - Codex 使用说明：安装后的 `codex-to-im` 文档
 - Gemini 使用说明：安装后的 `gemini-to-im` 文档
+- 发布说明：[RELEASE_NOTES_CN.md](RELEASE_NOTES_CN.md)
 - 故障排查参考：[references/troubleshooting.md](references/troubleshooting.md)
 - 安全说明：[SECURITY.md](SECURITY.md)
+
+## 附件支持
+
+- 飞书 / Lark 的入站消息可以把图片和普通文件附件带进桥接层。
+- Gemini 原本就会把附件写入本地临时目录，并把路径传给 CLI prompt。
+- Codex 和 Claude Code 现在也采用相同的普通文件回退方案：把附件落地到本地临时文件，再把绝对路径注入 prompt。
+- 图片附件在目标 runtime 支持的情况下仍然继续走原生多模态输入。
 
 ## 内建会话管理命令
 
