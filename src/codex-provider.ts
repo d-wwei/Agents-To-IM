@@ -138,6 +138,26 @@ function getApprovalPolicyOverride(): 'never' | 'on-request' | 'on-failure' | 'u
   return undefined;
 }
 
+export function getStablePwd(): string {
+  const configured = process.env.CTI_DEFAULT_WORKDIR;
+  if (configured && path.isAbsolute(configured) && fs.existsSync(configured)) {
+    return configured;
+  }
+
+  try {
+    return process.cwd();
+  } catch {
+    // Fall through to a stable home directory when the inherited cwd is gone.
+  }
+
+  const home = process.env.HOME || os.homedir();
+  if (home && path.isAbsolute(home) && fs.existsSync(home)) {
+    return home;
+  }
+
+  return os.homedir();
+}
+
 function looksLikeClaudeModel(model?: string): boolean {
   return !!model && /^claude[-_]/i.test(model);
 }
@@ -193,6 +213,10 @@ export class CodexProvider implements LLMProvider {
       ...(apiKey ? { apiKey } : {}),
       ...(baseUrl ? { baseUrl } : {}),
       ...(codexPathOverride ? { codexPathOverride } : {}),
+      env: {
+        ...process.env,
+        PWD: getStablePwd(),
+      },
     });
 
     return { sdk: this.sdk, codex: this.codex };

@@ -419,6 +419,22 @@ describe('CodexProvider', () => {
     }
   });
 
+  it('prefers CTI_DEFAULT_WORKDIR for a stable PWD', async () => {
+    const oldWorkdir = process.env.CTI_DEFAULT_WORKDIR;
+    process.env.CTI_DEFAULT_WORKDIR = '/Users/eli';
+
+    try {
+      const { getStablePwd } = await import('../codex-provider.js');
+      assert.equal(getStablePwd(), '/Users/eli');
+    } finally {
+      if (oldWorkdir === undefined) {
+        delete process.env.CTI_DEFAULT_WORKDIR;
+      } else {
+        process.env.CTI_DEFAULT_WORKDIR = oldWorkdir;
+      }
+    }
+  });
+
   it('retries with fresh thread when resume fails before any events', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
