@@ -41,7 +41,16 @@ function getAttachmentExtension(file: FileAttachment): string {
 function buildPromptWithAttachmentPaths(prompt: string, attachmentPaths: string[]): string {
   if (attachmentPaths.length === 0) return prompt;
 
-  const sections = [prompt.trim(), 'Attached local files:'];
+  const sections = [
+    'Attachment handling policy:',
+    '- Inspect attached files proactively when they are relevant to the user message.',
+    '- Do not ask whether to process a non-image attachment before trying.',
+    '- If a file cannot be handled, explain the concrete missing capability or dependency and what format would work instead.',
+    '- For audio attachments from the IM bridge, prefer any transcript or explicit bridge failure note already present in the user message. Do not retry OS-specific speech frameworks unless the user explicitly asks.',
+    '',
+    prompt.trim(),
+    'Attached local files:',
+  ];
   for (const filePath of attachmentPaths) {
     sections.push(`@${filePath}`);
   }

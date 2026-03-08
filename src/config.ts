@@ -15,6 +15,7 @@ export interface Config {
   codexApprovalPolicy?: 'never' | 'on-request' | 'on-failure' | 'untrusted';
   geminiApiKey?: string;
   googleApiKey?: string;
+  openaiApiKey?: string;
   // Telegram
   tgBotToken?: string;
   tgChatId?: string;
@@ -24,6 +25,11 @@ export interface Config {
   feishuAppSecret?: string;
   feishuDomain?: string;
   feishuAllowedUsers?: string[];
+  feishuAudioTranscribe?: boolean;
+  audioTranscoder?: string;
+  elevenLabsApiKey?: string;
+  elevenLabsVoiceId?: string;
+  elevenLabsModelId?: string;
   // Discord
   discordBotToken?: string;
   discordAllowedUsers?: string[];
@@ -112,6 +118,7 @@ export function loadConfig(): Config {
     codexApprovalPolicy: env.get("CTI_CODEX_APPROVAL_POLICY") as Config["codexApprovalPolicy"] || undefined,
     geminiApiKey: env.get("CTI_GEMINI_API_KEY") || undefined,
     googleApiKey: env.get("CTI_GOOGLE_API_KEY") || undefined,
+    openaiApiKey: env.get("CTI_OPENAI_API_KEY") || undefined,
     tgBotToken: env.get("CTI_TG_BOT_TOKEN") || undefined,
     tgChatId: env.get("CTI_TG_CHAT_ID") || undefined,
     tgAllowedUsers: splitCsv(env.get("CTI_TG_ALLOWED_USERS")),
@@ -119,6 +126,11 @@ export function loadConfig(): Config {
     feishuAppSecret: env.get("CTI_FEISHU_APP_SECRET") || undefined,
     feishuDomain: env.get("CTI_FEISHU_DOMAIN") || undefined,
     feishuAllowedUsers: splitCsv(env.get("CTI_FEISHU_ALLOWED_USERS")),
+    feishuAudioTranscribe: env.get("CTI_FEISHU_AUDIO_TRANSCRIBE") !== "false",
+    audioTranscoder: env.get("CTI_AUDIO_TRANSCODER") || undefined,
+    elevenLabsApiKey: env.get("CTI_ELEVENLABS_API_KEY") || undefined,
+    elevenLabsVoiceId: env.get("CTI_ELEVENLABS_VOICE_ID") || undefined,
+    elevenLabsModelId: env.get("CTI_ELEVENLABS_MODEL_ID") || undefined,
     discordBotToken: env.get("CTI_DISCORD_BOT_TOKEN") || undefined,
     discordAllowedUsers: splitCsv(env.get("CTI_DISCORD_ALLOWED_USERS")),
     discordAllowedChannels: splitCsv(
@@ -162,6 +174,7 @@ export function saveConfig(config: Config): void {
   out += formatEnvLine("CTI_CODEX_APPROVAL_POLICY", config.codexApprovalPolicy);
   out += formatEnvLine("CTI_GEMINI_API_KEY", config.geminiApiKey);
   out += formatEnvLine("CTI_GOOGLE_API_KEY", config.googleApiKey);
+  out += formatEnvLine("CTI_OPENAI_API_KEY", config.openaiApiKey);
   out += formatEnvLine("CTI_TG_BOT_TOKEN", config.tgBotToken);
   out += formatEnvLine("CTI_TG_CHAT_ID", config.tgChatId);
   out += formatEnvLine(
@@ -175,6 +188,14 @@ export function saveConfig(config: Config): void {
     "CTI_FEISHU_ALLOWED_USERS",
     config.feishuAllowedUsers?.join(",")
   );
+  out += formatEnvLine(
+    "CTI_FEISHU_AUDIO_TRANSCRIBE",
+    config.feishuAudioTranscribe === false ? "false" : "true"
+  );
+  out += formatEnvLine("CTI_AUDIO_TRANSCODER", config.audioTranscoder);
+  out += formatEnvLine("CTI_ELEVENLABS_API_KEY", config.elevenLabsApiKey);
+  out += formatEnvLine("CTI_ELEVENLABS_VOICE_ID", config.elevenLabsVoiceId);
+  out += formatEnvLine("CTI_ELEVENLABS_MODEL_ID", config.elevenLabsModelId);
   out += formatEnvLine("CTI_DISCORD_BOT_TOKEN", config.discordBotToken);
   out += formatEnvLine(
     "CTI_DISCORD_ALLOWED_USERS",
@@ -262,6 +283,25 @@ export function configToSettings(config: Config): Map<string, string> {
   if (config.feishuDomain) m.set("bridge_feishu_domain", config.feishuDomain);
   if (config.feishuAllowedUsers)
     m.set("bridge_feishu_allowed_users", config.feishuAllowedUsers.join(","));
+  m.set(
+    "bridge_feishu_audio_transcribe",
+    config.feishuAudioTranscribe === false ? "false" : "true"
+  );
+  if (config.audioTranscoder) {
+    m.set("bridge_audio_transcoder", config.audioTranscoder);
+  }
+  if (config.elevenLabsApiKey) {
+    m.set("bridge_elevenlabs_api_key", config.elevenLabsApiKey);
+  }
+  if (config.elevenLabsVoiceId) {
+    m.set("bridge_elevenlabs_voice_id", config.elevenLabsVoiceId);
+  }
+  if (config.elevenLabsModelId) {
+    m.set("bridge_elevenlabs_model_id", config.elevenLabsModelId);
+  }
+  if (config.openaiApiKey) {
+    m.set("bridge_openai_api_key", config.openaiApiKey);
+  }
 
   // ── QQ ──
   // Upstream keys: bridge_qq_enabled, bridge_qq_app_id, bridge_qq_app_secret,

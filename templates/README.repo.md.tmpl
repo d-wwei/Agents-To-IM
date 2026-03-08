@@ -14,6 +14,7 @@ Bridge AI coding hosts to IM platforms, with isolated installs for Claude, Codex
 - Separate runtime homes for each host, following the pattern `~/.<host>-to-im`
 - Telegram, Discord, and Feishu/Lark bridge support
 - Background daemon management, permission approval flow, streaming replies, and persisted sessions
+- Consistent attachment handling across runtimes, including non-image files forwarded as local paths when native file input is unavailable
 
 ## Host Variants
 
@@ -49,8 +50,95 @@ Each install renders host-specific docs and commands into its own skill director
 - For Claude-oriented usage, see the installed `claude-to-im` skill docs
 - For Codex-oriented usage, see the installed `codex-to-im` skill docs
 - For Gemini-oriented usage, see the installed `gemini-to-im` skill docs
+- Release notes: [RELEASE_NOTES.md](RELEASE_NOTES.md)
 - Troubleshooting reference: [references/troubleshooting.md](references/troubleshooting.md)
 - Security model: [SECURITY.md](SECURITY.md)
+
+## Codex Permission Profiles
+
+Codex variants support configurable runtime permission profiles through `~/.codex-to-im/config.env`.
+
+Default example profile:
+
+```bash
+CTI_CODEX_SANDBOX_MODE=danger-full-access
+CTI_CODEX_APPROVAL_POLICY=never
+```
+
+Optional wrapper command:
+
+```bash
+CTI_CODEX_EXECUTABLE=/Users/you/.local/bin/codex-full
+```
+
+Profiles:
+
+- `full` -> `danger-full-access` + `never`
+- `safe` -> `workspace-write` + `on-request`
+
+This is intended for trusted environments only.
+
+If you want a simple switch instead of hand-editing config, use the installed host variant's `scripts/permissions.sh` helper:
+
+```bash
+bash ~/.codex/skills/codex-to-im/scripts/permissions.sh show
+bash ~/.codex/skills/codex-to-im/scripts/permissions.sh safe
+bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
+```
+
+## Attachment Support
+
+- Feishu/Lark inbound messages can carry images and regular file attachments into the bridge.
+- Gemini already persists attachments to local temp files and passes those paths into the CLI prompt.
+- Codex and Claude Code now persist all inbound attachments to local temp files and reference those absolute paths in the prompt as a universal fallback.
+- Image attachments still use native multi-modal input where the target runtime supports it, so runtimes that understand images get both the native image input and the local-path fallback.
+- This matters most for Claude-compatible runtimes behind custom gateways or enterprise model adapters: even if native image blocks are ignored, the agent can still open the saved local file path.
+
+## Voice and Audio
+
+- Feishu inbound audio messages are handled at the bridge layer, not delegated to the runtime as opaque files.
+- The bridge downloads the audio, transcodes Ogg/Opus input to 16 kHz PCM when needed, and calls Feishu STT before the message reaches Codex, Claude, or Gemini.
+- If Feishu STT is rate-limited or unavailable, the bridge can optionally fall back to OpenAI Whisper transcription when `CTI_OPENAI_API_KEY` is configured.
+- When the user explicitly asks for a voice reply, the bridge can optionally generate an ElevenLabs TTS audio reply and send it back as a Feishu file attachment.
+
+## Dependencies and Provider Keys
+
+Required or recommended dependencies:
+
+- `ffmpeg`
+  Used for Feishu voice-message transcoding, especially Ogg/Opus to 16 kHz PCM.
+- Feishu app permission `speech_to_text:speech`
+  Required if you want bridge-side Feishu audio transcription.
+
+Optional provider API keys:
+
+- `CTI_OPENAI_API_KEY`
+  Enables OpenAI Whisper fallback for inbound audio transcription when Feishu STT fails or is rate-limited.
+- `CTI_ELEVENLABS_API_KEY`
+  Enables ElevenLabs voice replies when the user explicitly asks for audio output.
+- `CTI_ELEVENLABS_VOICE_ID`
+  Required together with the ElevenLabs API key.
+- `CTI_ELEVENLABS_MODEL_ID`
+  Optional. Defaults to `eleven_multilingual_v2`.
+
+Relevant config fields in `~/.<host>-to-im/config.env`:
+
+```bash
+CTI_FEISHU_AUDIO_TRANSCRIBE=true
+CTI_AUDIO_TRANSCODER=/opt/homebrew/bin/ffmpeg
+CTI_OPENAI_API_KEY=...
+CTI_ELEVENLABS_API_KEY=...
+CTI_ELEVENLABS_VOICE_ID=...
+CTI_ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+
+Privacy and security guidance:
+
+- Do not send provider API keys through IM chats. Store them only in the local `config.env`.
+- The bridge writes `config.env` with mode `0600`; treat that as baseline protection, not full secret management.
+- If you enable `CTI_OPENAI_API_KEY`, fallback transcription sends audio to OpenAI for processing. Only enable it if that matches your privacy requirements.
+- If you enable ElevenLabs replies, outbound reply text is sent to ElevenLabs when a user explicitly requests voice output.
+- For stronger local protection, prefer disk encryption such as FileVault and rotate leaked provider keys immediately.
 
 ## Built-in Session Management Commands
 

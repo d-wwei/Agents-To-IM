@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 // ── SSE utils tests ─────────────────────────────────────────
 
@@ -47,6 +48,61 @@ function parseSSEChunks(chunks: string[]): Array<{ type: string; data: string }>
 }
 
 describe('CodexProvider', () => {
+  it('passes proactive attachment policy for non-image files', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions());
+
+    const captured: { input?: unknown } = {};
+    const mockThread = {
+      runStreamed: (input: unknown) => {
+        captured.input = input;
+        return {
+          events: (async function* () {
+            yield { type: 'thread.started', thread_id: 'thread-1' };
+            yield { type: 'turn.completed', usage: {} };
+          })(),
+        };
+      },
+    };
+    (provider as any).ensureSDK = async () => ({
+      sdk: {},
+      codex: {
+        startThread: () => mockThread,
+      },
+    });
+
+    const stream = provider.streamChat({
+      prompt: '请处理这个语音',
+      sessionId: 'attachment-policy-session',
+      files: [{
+        id: 'att-1',
+        name: 'voice.ogg',
+        type: 'audio/ogg',
+        size: 4,
+        data: Buffer.from('test').toString('base64'),
+      }],
+    });
+
+    await collectStream(stream);
+
+    assert.equal(typeof captured.input, 'string');
+    const input = captured.input as string;
+    assert.match(input, /Attachment handling policy:/);
+    assert.match(input, /Do not ask whether to process a non-image attachment before trying\./);
+    assert.match(input, /Do not retry OS-specific speech frameworks unless the user explicitly asks\./);
+
+    const attachmentPaths = input
+      .split('\n')
+      .filter(line => line.startsWith('@'))
+      .map(line => line.slice(1));
+    for (const attachmentPath of attachmentPaths) {
+      if (fs.existsSync(attachmentPath)) {
+        fs.unlinkSync(attachmentPath);
+      }
+    }
+  });
+
   it('emits error when SDK init fails', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
@@ -574,7 +630,7 @@ describe('CodexProvider image input', () => {
     assert.equal(capturedInput, 'Hello');
   });
 
-  it('builds local_image input with multiple images, ignoring non-image files', async () => {
+  it('builds local_image input with multiple images, preserving non-image file references', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
     const provider = new CodexProvider(new PendingPermissions());
@@ -610,8 +666,10 @@ describe('CodexProvider image input', () => {
     await collectStream(stream);
 
     const parts = capturedInput as Array<Record<string, string>>;
-    assert.equal(parts.length, 3, 'Should have 1 text + 2 local_image parts (non-image file excluded)');
+    assert.equal(parts.length, 3, 'Should have 1 text + 2 local_image parts');
     assert.equal(parts[0].type, 'text');
+    assert.match(parts[0].text, /Attachment handling policy:/);
+    assert.match(parts[0].text, /@.*c\.txt/);
     assert.equal(parts[1].type, 'local_image');
     assert.ok(parts[1].path.endsWith('.png'));
     assert.equal(parts[2].type, 'local_image');
@@ -654,7 +712,8 @@ describe('CodexProvider image input', () => {
 
     assert.equal(typeof capturedInput, 'string');
     const text = capturedInput as string;
-    assert.match(text, /^Review these files/);
+    assert.match(text, /Attachment handling policy:/);
+    assert.match(text, /Review these files/);
     assert.match(text, /Attached local files:/);
     assert.match(text, /@.*notes\.txt/);
     assert.match(text, /@.*payload\.json/);
@@ -698,7 +757,8 @@ describe('CodexProvider image input', () => {
     const parts = capturedInput as Array<Record<string, string>>;
     assert.equal(parts.length, 2);
     assert.equal(parts[0].type, 'text');
-    assert.match(parts[0].text, /^Compare these inputs/);
+    assert.match(parts[0].text, /Attachment handling policy:/);
+    assert.match(parts[0].text, /Compare these inputs/);
     assert.match(parts[0].text, /Attached local files:/);
     assert.match(parts[0].text, /@.*readme\.md/);
     assert.equal(parts[1].type, 'local_image');

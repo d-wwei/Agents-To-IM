@@ -15,7 +15,11 @@
  * the normal /perm command processing pipeline.
  */
 
+import { execFileSync } from 'node:child_process';
 import crypto from 'crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type {
   ChannelType,
@@ -43,6 +47,8 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
 /** Feishu emoji type for typing indicator (same as Openclaw). */
 const TYPING_EMOJI = 'Typing';
+const PCM_SAMPLE_RATE = 16000;
+const WAV_HEADER_BYTES = 44;
 
 /** Shape of the SDK's im.message.receive_v1 event data. */
 type FeishuMessageEventData = {
@@ -93,6 +99,12 @@ const MIME_BY_TYPE: Record<string, string> = {
   media: 'application/octet-stream',
 };
 
+type GeneratedVoiceReply = {
+  fileName: string;
+  mimeType: string;
+  data: Buffer;
+};
+
 export class FeishuAdapter extends BaseChannelAdapter {
   readonly channelType: ChannelType = 'feishu';
 
@@ -109,6 +121,8 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private lastIncomingMessageId = new Map<string, string>();
   /** Track active typing reaction IDs per chat for cleanup. */
   private typingReactions = new Map<string, string>();
+  private tenantAccessToken: string | null = null;
+  private tenantAccessTokenExpiresAt = 0;
 
   // ── Lifecycle ───────────────────────────────────────────────
 
@@ -123,10 +137,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     const appId = getBridgeContext().store.getSetting('bridge_feishu_app_id') || '';
     const appSecret = getBridgeContext().store.getSetting('bridge_feishu_app_secret') || '';
-    const domainSetting = getBridgeContext().store.getSetting('bridge_feishu_domain') || 'feishu';
-    const domain = domainSetting === 'lark'
-      ? lark.Domain.Lark
-      : lark.Domain.Feishu;
+    const domain = this.resolveDomain();
 
     // Create REST client
     this.restClient = new lark.Client({
@@ -188,6 +199,8 @@ export class FeishuAdapter extends BaseChannelAdapter {
     this.seenMessageIds.clear();
     this.lastIncomingMessageId.clear();
     this.typingReactions.clear();
+    this.tenantAccessToken = null;
+    this.tenantAccessTokenExpiresAt = 0;
 
     console.log('[feishu-adapter] Stopped');
   }
@@ -295,6 +308,45 @@ export class FeishuAdapter extends BaseChannelAdapter {
       return this.sendAsCard(message.address.chatId, text);
     }
     return this.sendAsPost(message.address.chatId, text);
+  }
+
+  async sendFileAttachment(chatId: string, attachment: GeneratedVoiceReply): Promise<SendResult> {
+    if (!this.restClient) {
+      return { ok: false, error: 'Feishu client not initialized' };
+    }
+
+    try {
+      console.log('[feishu-adapter] Uploading outbound file attachment:', attachment.fileName, attachment.mimeType, attachment.data.length);
+      const upload = await this.restClient.im.file.create({
+        data: {
+          file_type: this.resolveUploadFileType(attachment.fileName, attachment.mimeType),
+          file_name: attachment.fileName,
+          file: attachment.data,
+        },
+      });
+
+      if (!upload?.file_key) {
+        return { ok: false, error: 'Feishu file upload failed' };
+      }
+      console.log('[feishu-adapter] Outbound file uploaded:', upload.file_key);
+
+      const sent = await this.restClient.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'file',
+          content: JSON.stringify({ file_key: upload.file_key }),
+        },
+      });
+
+      if (sent?.data?.message_id) {
+        console.log('[feishu-adapter] Outbound file message sent:', sent.data.message_id);
+        return { ok: true, messageId: sent.data.message_id };
+      }
+      return { ok: false, error: sent?.msg || 'Feishu file send failed' };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Feishu file send failed' };
+    }
   }
 
   /**
@@ -488,6 +540,18 @@ export class FeishuAdapter extends BaseChannelAdapter {
     }
   }
 
+  private resolveUploadFileType(fileName: string, mimeType: string): 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream' {
+    const lowerName = fileName.toLowerCase();
+    const lowerMime = mimeType.toLowerCase();
+    if (lowerName.endsWith('.opus') || lowerMime.includes('opus')) return 'opus';
+    if (lowerName.endsWith('.mp4') || lowerMime === 'video/mp4') return 'mp4';
+    if (lowerName.endsWith('.pdf') || lowerMime === 'application/pdf') return 'pdf';
+    if (lowerName.endsWith('.doc') || lowerName.endsWith('.docx')) return 'doc';
+    if (lowerName.endsWith('.xls') || lowerName.endsWith('.xlsx')) return 'xls';
+    if (lowerName.endsWith('.ppt') || lowerName.endsWith('.pptx')) return 'ppt';
+    return 'stream';
+  }
+
   // ── Config & Auth ───────────────────────────────────────────
 
   validateConfig(): string | null {
@@ -501,6 +565,19 @@ export class FeishuAdapter extends BaseChannelAdapter {
     if (!appSecret) return 'bridge_feishu_app_secret not configured';
 
     return null;
+  }
+
+  private resolveDomain(): lark.Domain {
+    const domainSetting = (getBridgeContext().store.getSetting('bridge_feishu_domain') || 'feishu').toLowerCase();
+    return domainSetting.includes('lark')
+      ? lark.Domain.Lark
+      : lark.Domain.Feishu;
+  }
+
+  private resolveDomainBase(): string {
+    return this.resolveDomain() === lark.Domain.Lark
+      ? 'https://open.larksuite.com'
+      : 'https://open.feishu.cn';
   }
 
   isAuthorized(userId: string, chatId: string): boolean {
@@ -774,6 +851,14 @@ export class FeishuAdapter extends BaseChannelAdapter {
         const attachment = await this.downloadResource(msg.message_id, fileKey, resourceType);
         if (attachment) {
           attachments.push(attachment);
+          if (messageType === 'audio') {
+            const transcription = await this.transcribeAudioAttachment(attachment);
+            if (transcription.transcript) {
+              text = this.mergeTranscriptText(text, transcription.transcript);
+            } else if (!text.trim()) {
+              text = transcription.failureText || this.buildAudioTranscriptionFailureText(attachment);
+            }
+          }
         } else {
           text = `[${messageType} download failed]`;
           try {
@@ -943,21 +1028,14 @@ export class FeishuAdapter extends BaseChannelAdapter {
         ? 'https://open.larksuite.com'
         : 'https://open.feishu.cn';
 
-      const tokenRes = await fetch(`${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      const tokenData: any = await tokenRes.json();
-      if (!tokenData.tenant_access_token) {
-        console.warn('[feishu-adapter] Failed to get tenant access token');
+      const token = await this.getTenantAccessToken();
+      if (!token) {
         return;
       }
 
       const botRes = await fetch(`${baseUrl}/open-apis/bot/v3/info/`, {
         method: 'GET',
-        headers: { Authorization: `Bearer ${tokenData.tenant_access_token}` },
+        headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10_000),
       });
       const botData: any = await botRes.json();
@@ -998,6 +1076,385 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private stripMentionMarkers(text: string): string {
     // Feishu uses @_user_N placeholders for mentions
     return text.replace(/@_user_\d+/g, '').trim();
+  }
+
+  private isAudioTranscriptionEnabled(): boolean {
+    return getBridgeContext().store.getSetting('bridge_feishu_audio_transcribe') !== 'false';
+  }
+
+  private mergeTranscriptText(text: string, transcript: string): string {
+    const cleanedTranscript = transcript.trim();
+    if (!cleanedTranscript) return text;
+    if (!text.trim()) return `[Voice transcript]\n${cleanedTranscript}`;
+    return `${text.trim()}\n\n[Voice transcript]\n${cleanedTranscript}`;
+  }
+
+  private async transcribeAudioAttachment(
+    attachment: FileAttachment,
+  ): Promise<{ transcript: string | null; failureText?: string }> {
+    if (!this.isAudioTranscriptionEnabled()) {
+      return { transcript: null };
+    }
+
+    try {
+      const speech = this.toSpeechPayload(attachment);
+      if (!speech) {
+        console.warn('[feishu-adapter] Audio transcription skipped: unsupported audio format or transcoder unavailable');
+        return {
+          transcript: null,
+          failureText: this.buildAudioTranscriptionFailureText(attachment),
+        };
+      }
+
+      const token = await this.getTenantAccessToken();
+      if (!token) {
+        console.warn('[feishu-adapter] Audio transcription skipped: tenant_access_token unavailable');
+        return {
+          transcript: null,
+          failureText: '[voice message received but bridge transcription failed: tenant access token unavailable]',
+        };
+      }
+
+      const response = await fetch(`${this.resolveDomainBase()}/open-apis/speech_to_text/v1/speech/file_recognize`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          speech: { speech },
+          config: {
+            file_id: this.makeSpeechFileId(),
+            format: 'pcm',
+            engine_type: '16k_auto',
+          },
+        }),
+      });
+
+      const payload = await response.json() as {
+        code?: number;
+        msg?: string;
+        data?: Record<string, unknown>;
+      };
+      if (!response.ok || payload.code !== 0) {
+        console.warn('[feishu-adapter] Audio transcription failed:', payload.msg || response.statusText);
+        const whisperFallback = await this.transcribeWithOpenAIWhisper(attachment);
+        if (whisperFallback) {
+          return { transcript: whisperFallback };
+        }
+        return {
+          transcript: null,
+          failureText: this.buildApiTranscriptionFailureText(payload.msg),
+        };
+      }
+
+      return {
+        transcript: this.extractTranscript(payload.data),
+      };
+    } catch (err) {
+      console.warn('[feishu-adapter] Audio transcription error:', err instanceof Error ? err.message : err);
+      return {
+        transcript: null,
+        failureText: '[voice message received but bridge transcription failed: speech-to-text request errored]',
+      };
+    }
+  }
+
+  private buildAudioTranscriptionFailureText(attachment: FileAttachment): string {
+    const name = attachment.name.toLowerCase();
+    const type = attachment.type.toLowerCase();
+    const explicit = (getBridgeContext().store.getSetting('bridge_audio_transcoder') || '').trim();
+    const ffmpegAvailable = (explicit && this.commandExists(explicit))
+      || this.commandExists('ffmpeg')
+      || this.commandExists('/opt/homebrew/bin/ffmpeg');
+
+    if ((type === 'audio/ogg' || name.endsWith('.ogg') || name.endsWith('.opus')) && !ffmpegAvailable) {
+      return '[voice message received but bridge transcription failed: Ogg/Opus audio requires ffmpeg on the bridge host]';
+    }
+
+    return '[voice message received but transcription failed]';
+  }
+
+  private buildApiTranscriptionFailureText(message: string | undefined): string {
+    const text = (message || '').trim();
+    if (text.includes('speech_to_text:speech')) {
+      return '[voice message received but bridge transcription failed: Feishu app is missing the speech_to_text:speech permission]';
+    }
+    if (text.includes('request trigger frequency limit')) {
+      if (this.getOpenAIApiKey()) {
+        return '[voice message received but bridge transcription failed: Feishu STT is rate-limited and the OpenAI Whisper fallback also failed]';
+      }
+      return '[voice message received but bridge transcription failed: Feishu STT is rate-limited. To enable OpenAI Whisper fallback, set CTI_OPENAI_API_KEY in the bridge config.]';
+    }
+    if (text) {
+      return `[voice message received but bridge transcription failed: ${text}]`;
+    }
+    return '[voice message received but transcription failed]';
+  }
+
+  private getOpenAIApiKey(): string {
+    return (getBridgeContext().store.getSetting('bridge_openai_api_key') || '').trim();
+  }
+
+  private async transcribeWithOpenAIWhisper(attachment: FileAttachment): Promise<string | null> {
+    const apiKey = this.getOpenAIApiKey();
+    if (!apiKey) return null;
+
+    try {
+      const bytes = Buffer.from(attachment.data, 'base64');
+      const form = new FormData();
+      form.set('model', 'whisper-1');
+      form.set('response_format', 'json');
+      form.set('file', new Blob([bytes], { type: attachment.type || 'application/octet-stream' }), attachment.name);
+
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: form,
+      });
+
+      const payload = await response.json() as {
+        text?: string;
+        error?: { message?: string };
+      };
+
+      if (!response.ok) {
+        console.warn('[feishu-adapter] OpenAI Whisper fallback failed:', payload.error?.message || response.statusText);
+        return null;
+      }
+
+      return typeof payload.text === 'string' && payload.text.trim()
+        ? payload.text.trim()
+        : null;
+    } catch (err) {
+      console.warn('[feishu-adapter] OpenAI Whisper fallback error:', err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  private makeSpeechFileId(): string {
+    return crypto.randomBytes(8).toString('hex');
+  }
+
+  private extractTranscript(data: Record<string, unknown> | undefined): string | null {
+    if (!data) return null;
+    const directText = [
+      data.recognition_text,
+      data.text,
+      data.result,
+      data.transcript,
+    ].find((value) => typeof value === 'string' && value.trim().length > 0);
+    if (typeof directText === 'string') return directText.trim();
+
+    const recursive = (value: unknown): string | null => {
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (Array.isArray(value)) {
+        const parts = value.map(item => recursive(item)).filter((item): item is string => !!item);
+        return parts.length > 0 ? parts.join('\n') : null;
+      }
+      if (value && typeof value === 'object') {
+        for (const nested of Object.values(value as Record<string, unknown>)) {
+          const found = recursive(nested);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    return recursive(data);
+  }
+
+  private async getTenantAccessToken(): Promise<string | null> {
+    if (this.tenantAccessToken && Date.now() < this.tenantAccessTokenExpiresAt - 60_000) {
+      return this.tenantAccessToken;
+    }
+
+    const appId = getBridgeContext().store.getSetting('bridge_feishu_app_id') || '';
+    const appSecret = getBridgeContext().store.getSetting('bridge_feishu_app_secret') || '';
+    if (!appId || !appSecret) return null;
+
+    const tokenRes = await fetch(`${this.resolveDomainBase()}/open-apis/auth/v3/tenant_access_token/internal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+    });
+    const tokenData = await tokenRes.json() as {
+      code?: number;
+      msg?: string;
+      tenant_access_token?: string;
+      expire?: number;
+      expire_in?: number;
+    };
+
+    if (!tokenRes.ok || tokenData.code !== 0 || !tokenData.tenant_access_token) {
+      console.warn('[feishu-adapter] Failed to fetch tenant access token:', tokenData.msg || tokenRes.statusText);
+      return null;
+    }
+
+    const expiresInSeconds = typeof tokenData.expire === 'number'
+      ? tokenData.expire
+      : typeof tokenData.expire_in === 'number'
+        ? tokenData.expire_in
+        : 7200;
+    this.tenantAccessToken = tokenData.tenant_access_token;
+    this.tenantAccessTokenExpiresAt = Date.now() + expiresInSeconds * 1000;
+    return this.tenantAccessToken;
+  }
+
+  private toSpeechPayload(attachment: FileAttachment): string | null {
+    const bytes = Buffer.from(attachment.data, 'base64');
+    if (this.isRawPcmAttachment(attachment)) {
+      return bytes.toString('base64');
+    }
+
+    const wavData = this.extractPcmFromWav(bytes);
+    if (wavData) {
+      return wavData.toString('base64');
+    }
+
+    const transcoded = this.transcodeAudioToPcm(bytes, attachment);
+    return transcoded ? transcoded.toString('base64') : null;
+  }
+
+  private isRawPcmAttachment(attachment: FileAttachment): boolean {
+    const name = attachment.name.toLowerCase();
+    const mime = attachment.type.toLowerCase();
+    return mime === 'audio/pcm'
+      || mime === 'audio/raw'
+      || mime === 'audio/l16'
+      || name.endsWith('.pcm')
+      || name.endsWith('.raw');
+  }
+
+  private extractPcmFromWav(bytes: Buffer): Buffer | null {
+    if (bytes.byteLength < WAV_HEADER_BYTES) return null;
+    if (bytes.subarray(0, 4).toString('ascii') !== 'RIFF' || bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      return null;
+    }
+
+    let offset = 12;
+    let audioFormat = 0;
+    let channels = 0;
+    let sampleRate = 0;
+    let bitsPerSample = 0;
+    let dataChunk: Buffer | null = null;
+
+    while (offset + 8 <= bytes.length) {
+      const chunkId = bytes.subarray(offset, offset + 4).toString('ascii');
+      const chunkSize = bytes.readUInt32LE(offset + 4);
+      const chunkStart = offset + 8;
+      const chunkEnd = chunkStart + chunkSize;
+      if (chunkEnd > bytes.length) break;
+
+      if (chunkId === 'fmt ' && chunkSize >= 16) {
+        audioFormat = bytes.readUInt16LE(chunkStart);
+        channels = bytes.readUInt16LE(chunkStart + 2);
+        sampleRate = bytes.readUInt32LE(chunkStart + 4);
+        bitsPerSample = bytes.readUInt16LE(chunkStart + 14);
+      } else if (chunkId === 'data') {
+        dataChunk = bytes.subarray(chunkStart, chunkEnd);
+      }
+
+      offset = chunkEnd + (chunkSize % 2);
+    }
+
+    if (audioFormat !== 1 || channels !== 1 || sampleRate !== PCM_SAMPLE_RATE || bitsPerSample !== 16) {
+      return null;
+    }
+    return dataChunk;
+  }
+
+  private transcodeAudioToPcm(bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const explicitTranscoder = getBridgeContext().store.getSetting('bridge_audio_transcoder') || '';
+    const transcoders = explicitTranscoder ? [explicitTranscoder] : ['ffmpeg', '/usr/bin/afconvert'];
+
+    for (const transcoder of transcoders) {
+      const trimmed = transcoder.trim();
+      if (!trimmed || !this.commandExists(trimmed)) continue;
+      const output = trimmed.endsWith('afconvert')
+        ? this.transcodeWithAfconvert(trimmed, bytes, attachment)
+        : this.transcodeWithFfmpeg(trimmed, bytes, attachment);
+      if (output) return output;
+    }
+    return null;
+  }
+
+  private commandExists(command: string): boolean {
+    if (path.isAbsolute(command)) {
+      return fs.existsSync(command);
+    }
+    try {
+      execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], { stdio: 'ignore', timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private transcodeWithFfmpeg(command: string, bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cti-feishu-audio-'));
+    const inputPath = path.join(tmpDir, this.makeTempAudioName(attachment));
+    const outputPath = path.join(tmpDir, 'output.pcm');
+    try {
+      fs.writeFileSync(inputPath, bytes);
+      execFileSync(command, [
+        '-nostdin', '-y', '-i', inputPath,
+        '-f', 's16le',
+        '-acodec', 'pcm_s16le',
+        '-ac', '1',
+        '-ar', String(PCM_SAMPLE_RATE),
+        outputPath,
+      ], { stdio: 'ignore', timeout: 15_000 });
+      return fs.readFileSync(outputPath);
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  private transcodeWithAfconvert(command: string, bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cti-feishu-audio-'));
+    const inputPath = path.join(tmpDir, this.makeTempAudioName(attachment));
+    const outputPath = path.join(tmpDir, 'output.wav');
+    try {
+      fs.writeFileSync(inputPath, bytes);
+      execFileSync(command, [
+        '-f', 'WAVE',
+        '-d', `LEI16@${PCM_SAMPLE_RATE}`,
+        '-c', '1',
+        inputPath,
+        outputPath,
+      ], { stdio: 'ignore', timeout: 15_000 });
+      return this.extractPcmFromWav(fs.readFileSync(outputPath));
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  private makeTempAudioName(attachment: FileAttachment): string {
+    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (safeName.includes('.')) return safeName;
+
+    switch (attachment.type) {
+      case 'audio/ogg':
+        return `${safeName}.ogg`;
+      case 'audio/mpeg':
+        return `${safeName}.mp3`;
+      case 'audio/mp4':
+        return `${safeName}.m4a`;
+      case 'audio/wav':
+      case 'audio/x-wav':
+        return `${safeName}.wav`;
+      case 'audio/pcm':
+        return `${safeName}.pcm`;
+      default:
+        return `${safeName}.bin`;
+    }
   }
 
   // ── Resource download ───────────────────────────────────────
@@ -1076,8 +1533,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
       }
 
       const base64 = buffer.toString('base64');
-      const id = crypto.randomUUID();
-      const mimeType = MIME_BY_TYPE[resourceType] || 'application/octet-stream';
+      const mimeType = res.headers?.['content-type'] || MIME_BY_TYPE[resourceType] || 'application/octet-stream';
       const ext = resourceType === 'image' ? 'png'
         : resourceType === 'audio' ? 'ogg'
         : resourceType === 'video' ? 'mp4'
@@ -1086,7 +1542,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
       console.log(`[feishu-adapter] Resource downloaded: ${buffer.length} bytes, key=${fileKey}`);
 
       return {
-        id,
+        id: fileKey,
         name: `${fileKey}.${ext}`,
         type: mimeType,
         size: buffer.length,

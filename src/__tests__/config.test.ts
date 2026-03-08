@@ -79,15 +79,27 @@ describe('configToSettings', () => {
     const m = configToSettings({
       ...base,
       enabledChannels: ['feishu'],
+      openaiApiKey: 'openai-key',
       feishuAppId: 'app-id',
       feishuAppSecret: 'app-secret',
       feishuDomain: 'example.com',
       feishuAllowedUsers: ['fu1'],
+      feishuAudioTranscribe: false,
+      audioTranscoder: '/usr/local/bin/ffmpeg',
+      elevenLabsApiKey: 'elevenlabs-key',
+      elevenLabsVoiceId: 'voice-id',
+      elevenLabsModelId: 'eleven-multilingual-v2',
     });
     assert.equal(m.get('bridge_feishu_app_id'), 'app-id');
     assert.equal(m.get('bridge_feishu_app_secret'), 'app-secret');
     assert.equal(m.get('bridge_feishu_domain'), 'example.com');
     assert.equal(m.get('bridge_feishu_allowed_users'), 'fu1');
+    assert.equal(m.get('bridge_feishu_audio_transcribe'), 'false');
+    assert.equal(m.get('bridge_audio_transcoder'), '/usr/local/bin/ffmpeg');
+    assert.equal(m.get('bridge_elevenlabs_api_key'), 'elevenlabs-key');
+    assert.equal(m.get('bridge_elevenlabs_voice_id'), 'voice-id');
+    assert.equal(m.get('bridge_elevenlabs_model_id'), 'eleven-multilingual-v2');
+    assert.equal(m.get('bridge_openai_api_key'), 'openai-key');
   });
 
   it('sets bridge_qq_enabled based on enabledChannels', () => {
@@ -162,6 +174,12 @@ describe('configToSettings', () => {
     assert.equal(m.has('telegram_bot_token'), false);
     assert.equal(m.has('bridge_discord_bot_token'), false);
     assert.equal(m.has('bridge_feishu_app_id'), false);
+    assert.equal(m.get('bridge_feishu_audio_transcribe'), 'true');
+    assert.equal(m.has('bridge_audio_transcoder'), false);
+    assert.equal(m.has('bridge_elevenlabs_api_key'), false);
+    assert.equal(m.has('bridge_elevenlabs_voice_id'), false);
+    assert.equal(m.has('bridge_elevenlabs_model_id'), false);
+    assert.equal(m.has('bridge_openai_api_key'), false);
   });
 });
 

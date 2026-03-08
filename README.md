@@ -94,6 +94,52 @@ bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
 - Image attachments still use native multi-modal input where the target runtime supports it, so runtimes that understand images get both the native image input and the local-path fallback.
 - This matters most for Claude-compatible runtimes behind custom gateways or enterprise model adapters: even if native image blocks are ignored, the agent can still open the saved local file path.
 
+## Voice and Audio
+
+- Feishu inbound audio messages are handled at the bridge layer, not delegated to the runtime as opaque files.
+- The bridge downloads the audio, transcodes Ogg/Opus input to 16 kHz PCM when needed, and calls Feishu STT before the message reaches Codex, Claude, or Gemini.
+- If Feishu STT is rate-limited or unavailable, the bridge can optionally fall back to OpenAI Whisper transcription when `CTI_OPENAI_API_KEY` is configured.
+- When the user explicitly asks for a voice reply, the bridge can optionally generate an ElevenLabs TTS audio reply and send it back as a Feishu file attachment.
+
+## Dependencies and Provider Keys
+
+Required or recommended dependencies:
+
+- `ffmpeg`
+  Used for Feishu voice-message transcoding, especially Ogg/Opus to 16 kHz PCM.
+- Feishu app permission `speech_to_text:speech`
+  Required if you want bridge-side Feishu audio transcription.
+
+Optional provider API keys:
+
+- `CTI_OPENAI_API_KEY`
+  Enables OpenAI Whisper fallback for inbound audio transcription when Feishu STT fails or is rate-limited.
+- `CTI_ELEVENLABS_API_KEY`
+  Enables ElevenLabs voice replies when the user explicitly asks for audio output.
+- `CTI_ELEVENLABS_VOICE_ID`
+  Required together with the ElevenLabs API key.
+- `CTI_ELEVENLABS_MODEL_ID`
+  Optional. Defaults to `eleven_multilingual_v2`.
+
+Relevant config fields in `~/.<host>-to-im/config.env`:
+
+```bash
+CTI_FEISHU_AUDIO_TRANSCRIBE=true
+CTI_AUDIO_TRANSCODER=/opt/homebrew/bin/ffmpeg
+CTI_OPENAI_API_KEY=...
+CTI_ELEVENLABS_API_KEY=...
+CTI_ELEVENLABS_VOICE_ID=...
+CTI_ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+
+Privacy and security guidance:
+
+- Do not send provider API keys through IM chats. Store them only in the local `config.env`.
+- The bridge writes `config.env` with mode `0600`; treat that as baseline protection, not full secret management.
+- If you enable `CTI_OPENAI_API_KEY`, fallback transcription sends audio to OpenAI for processing. Only enable it if that matches your privacy requirements.
+- If you enable ElevenLabs replies, outbound reply text is sent to ElevenLabs when a user explicitly requests voice output.
+- For stronger local protection, prefer disk encryption such as FileVault and rotate leaked provider keys immediately.
+
 ## Built-in Session Management Commands
 
 The bridge now includes cross-host session management commands at the bridge layer. They work the same way for Claude, Codex, and Gemini variants because they are handled before a message is forwarded to the underlying agent.

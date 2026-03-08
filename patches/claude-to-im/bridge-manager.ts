@@ -21,6 +21,7 @@ import { markdownToDiscordChunks } from './markdown/discord';
 import { getBridgeContext } from './context';
 import { escapeHtml } from './adapters/telegram-utils';
 import { tryHandleSessionManagementCommand } from '../../../../../src/session-command-support.js';
+import { prepareVoiceReply, wantsVoiceReply, type GeneratedVoiceReply } from '../../../../../src/voice-reply.js';
 import {
   validateWorkingDirectory,
   validateSessionId,
@@ -132,6 +133,10 @@ async function deliverResponse(
     text: responseText,
     parseMode: 'plain',
   }, { sessionId });
+}
+
+interface VoiceReplyCapableAdapter extends BaseChannelAdapter {
+  sendFileAttachment?: (chatId: string, attachment: GeneratedVoiceReply) => Promise<SendResult>;
 }
 
 interface AdapterMeta {
@@ -441,6 +446,10 @@ async function handleMessage(
 
   const rawText = msg.text.trim();
   const hasAttachments = msg.attachments && msg.attachments.length > 0;
+  const voiceReplyRequested = wantsVoiceReply(rawText);
+  if (voiceReplyRequested) {
+    console.log('[bridge-manager] Voice reply requested for chat:', msg.address.chatId);
+  }
   if (!rawText && !hasAttachments) { ack(); return; }
 
   // Check for IM commands (before sanitization — commands are validated individually)
@@ -558,6 +567,36 @@ async function handleMessage(
     // Send response text — render via channel-appropriate format
     if (result.responseText) {
       await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+      if (voiceReplyRequested) {
+        const voiceReply = await prepareVoiceReply(result.responseText);
+        console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);
+        if (voiceReply.status === 'needs_config' || voiceReply.status === 'error') {
+          await deliver(adapter, {
+            address: msg.address,
+            text: voiceReply.noteText,
+            parseMode: 'plain',
+          }, { sessionId: binding.codepilotSessionId });
+        } else if (voiceReply.status === 'ready') {
+          const voiceAdapter = adapter as VoiceReplyCapableAdapter;
+          if (voiceAdapter.sendFileAttachment) {
+            const audioSend = await voiceAdapter.sendFileAttachment(msg.address.chatId, voiceReply.attachment);
+            console.log('[bridge-manager] Voice reply attachment send result:', audioSend.ok ? 'ok' : (audioSend.error || 'error'));
+            if (!audioSend.ok && audioSend.error) {
+              await deliver(adapter, {
+                address: msg.address,
+                text: `语音回复生成成功，但发送失败：${audioSend.error}`,
+                parseMode: 'plain',
+              }, { sessionId: binding.codepilotSessionId });
+            }
+          } else {
+            await deliver(adapter, {
+              address: msg.address,
+              text: '当前频道暂不支持桥接层语音附件回传。请继续使用文字回复，或改在支持附件发送的频道中使用。',
+              parseMode: 'plain',
+            }, { sessionId: binding.codepilotSessionId });
+          }
+        }
+      }
     } else if (result.hasError) {
       const errorResponse: OutboundMessage = {
         address: msg.address,

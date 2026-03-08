@@ -94,6 +94,52 @@ bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
 - 图片附件在目标 runtime 支持的情况下仍然继续走原生多模态输入，因此支持图片理解的 runtime 会同时拿到原生图片输入和本地路径兜底。
 - 这一点对接企业内网网关或自定义 Claude 兼容模型时尤其重要：即使底层 runtime 忽略了原生图片 block，代理仍然可以通过落地后的本地文件路径读取附件。
 
+## 语音与音频能力
+
+- 飞书入站语音消息在桥接层处理，不会只作为“不透明附件”丢给 runtime。
+- bridge 会先下载语音，必要时把 Ogg/Opus 转成 16 kHz PCM，再调用飞书 STT，然后才把文本交给 Codex、Claude 或 Gemini。
+- 如果飞书 STT 限频或不可用，并且配置了 `CTI_OPENAI_API_KEY`，bridge 可以自动回退到 OpenAI Whisper 做语音转写。
+- 当用户明确要求“语音回复”时，bridge 可以选配 ElevenLabs TTS，并把生成的音频作为 Feishu 文件附件发回去。
+
+## 依赖与 Provider API Key
+
+必需或推荐依赖：
+
+- `ffmpeg`
+  用于飞书语音消息转码，尤其是 Ogg/Opus -> 16 kHz PCM。
+- 飞书应用权限 `speech_to_text:speech`
+  如果要启用飞书侧语音转写，这个权限必须开通。
+
+可选 Provider API key：
+
+- `CTI_OPENAI_API_KEY`
+  当飞书 STT 失败或限频时，启用 OpenAI Whisper 作为入站语音转写兜底。
+- `CTI_ELEVENLABS_API_KEY`
+  当用户明确要求语音输出时，启用 ElevenLabs 语音回复。
+- `CTI_ELEVENLABS_VOICE_ID`
+  与 ElevenLabs API key 配套必填。
+- `CTI_ELEVENLABS_MODEL_ID`
+  可选，默认 `eleven_multilingual_v2`。
+
+`~/.<host>-to-im/config.env` 里的相关配置示例：
+
+```bash
+CTI_FEISHU_AUDIO_TRANSCRIBE=true
+CTI_AUDIO_TRANSCODER=/opt/homebrew/bin/ffmpeg
+CTI_OPENAI_API_KEY=...
+CTI_ELEVENLABS_API_KEY=...
+CTI_ELEVENLABS_VOICE_ID=...
+CTI_ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+
+隐私与安全建议：
+
+- 不要通过 IM 聊天发送 Provider API key，只保存在本机 `config.env`。
+- bridge 会以 `0600` 权限写入 `config.env`，但这只是基础保护，不等于完整的密钥托管方案。
+- 如果启用了 `CTI_OPENAI_API_KEY`，在 fallback 转写时音频会发送到 OpenAI 处理；只有在符合你的隐私要求时才建议开启。
+- 如果启用了 ElevenLabs 语音回复，当用户明确要求语音输出时，回复文本会发送给 ElevenLabs 生成音频。
+- 想进一步提升本地保护，建议开启 FileVault；一旦密钥泄露，立即去对应 Provider 后台轮换。
+
 ## 内建会话管理命令
 
 桥接现在在桥接层内建了一组会话管理命令。因为这些命令会在消息转发给底层代理之前先被处理，所以 Claude、Codex、Gemini 三个宿主变体的行为是一致的。
