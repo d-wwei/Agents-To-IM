@@ -54,12 +54,25 @@ Each install renders host-specific docs and commands into its own skill director
 - Troubleshooting reference: [references/troubleshooting.md](references/troubleshooting.md)
 - Security model: [SECURITY.md](SECURITY.md)
 
+For Codex variants, you can also override the executable and runtime policy in `~/.codex-to-im/config.env`:
+
+```bash
+CTI_CODEX_EXECUTABLE=/Users/you/.local/bin/codex-full
+CTI_CODEX_SANDBOX_MODE=danger-full-access
+CTI_CODEX_APPROVAL_POLICY=never
+```
+
+This is intended for trusted environments only.
+
+If you want a simple switch instead of hand-editing config, use the installed host variant's `scripts/permissions.sh` helper with `show`, `safe`, or `full`.
+
 ## Attachment Support
 
 - Feishu/Lark inbound messages can carry images and regular file attachments into the bridge.
 - Gemini already persists attachments to local temp files and passes those paths into the CLI prompt.
-- Codex and Claude Code now follow the same fallback for non-image files: attachments are written to local temp files and referenced by absolute path in the prompt.
-- Images still use native multi-modal input where the target runtime supports it.
+- Codex and Claude Code now persist all inbound attachments to local temp files and reference those absolute paths in the prompt as a universal fallback.
+- Image attachments still use native multi-modal input where the target runtime supports it, so runtimes that understand images get both the native image input and the local-path fallback.
+- This matters most for Claude-compatible runtimes behind custom gateways or enterprise model adapters: even if native image blocks are ignored, the agent can still open the saved local file path.
 
 ## Built-in Session Management Commands
 

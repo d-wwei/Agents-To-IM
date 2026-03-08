@@ -54,12 +54,25 @@ bash scripts/install-host.sh --host gemini
 - 故障排查参考：[references/troubleshooting.md](references/troubleshooting.md)
 - 安全说明：[SECURITY.md](SECURITY.md)
 
+对于 Codex 变体，也可以在 `~/.codex-to-im/config.env` 中覆盖可执行文件和运行策略：
+
+```bash
+CTI_CODEX_EXECUTABLE=/Users/you/.local/bin/codex-full
+CTI_CODEX_SANDBOX_MODE=danger-full-access
+CTI_CODEX_APPROVAL_POLICY=never
+```
+
+这只适合受信任环境。
+
+如果你不想手改配置，也可以使用已安装宿主变体里的 `scripts/permissions.sh`，支持 `show`、`safe`、`full` 三种模式。
+
 ## 附件支持
 
 - 飞书 / Lark 的入站消息可以把图片和普通文件附件带进桥接层。
 - Gemini 原本就会把附件写入本地临时目录，并把路径传给 CLI prompt。
-- Codex 和 Claude Code 现在也采用相同的普通文件回退方案：把附件落地到本地临时文件，再把绝对路径注入 prompt。
-- 图片附件在目标 runtime 支持的情况下仍然继续走原生多模态输入。
+- Codex 和 Claude Code 现在会把所有入站附件都落地到本地临时文件，并把绝对路径注入 prompt，作为统一兜底方案。
+- 图片附件在目标 runtime 支持的情况下仍然继续走原生多模态输入，因此支持图片理解的 runtime 会同时拿到原生图片输入和本地路径兜底。
+- 这一点对接企业内网网关或自定义 Claude 兼容模型时尤其重要：即使底层 runtime 忽略了原生图片 block，代理仍然可以通过落地后的本地文件路径读取附件。
 
 ## 内建会话管理命令
 
