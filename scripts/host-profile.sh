@@ -29,6 +29,23 @@ infer_host_from_skill_command() {
   esac
 }
 
+# Infer host from the parent directory path.
+# e.g. ~/.codex/skills/anything → codex, ~/.claude/skills/anything → claude
+infer_host_from_skills_path() {
+  local skill_dir="$1"
+  local parent_dir
+  parent_dir="$(dirname "$skill_dir")"
+  [ "$(basename "$parent_dir")" = "skills" ] || return 1
+  local host_home
+  host_home="$(basename "$(dirname "$parent_dir")")"
+  case "$host_home" in
+    .claude) printf '%s' "claude" ;;
+    .codex)  printf '%s' "codex" ;;
+    .gemini) printf '%s' "gemini" ;;
+    *)       return 1 ;;
+  esac
+}
+
 init_host_profile() {
   local skill_dir="$1"
   local derived=""
@@ -41,6 +58,12 @@ init_host_profile() {
     derived="$(infer_host_from_skill_command "$(basename "${CTI_HOME}")" 2>/dev/null || true)"
   fi
 
+  # Try parent directory path (e.g. ~/.codex/skills/* → codex)
+  if [ -z "$derived" ]; then
+    derived="$(infer_host_from_skills_path "$skill_dir" 2>/dev/null || true)"
+  fi
+
+  # Fallback: try skill directory basename (e.g. codex-to-im → codex)
   if [ -z "$derived" ]; then
     derived="$(infer_host_from_skill_command "$(basename "$skill_dir")" 2>/dev/null || true)"
   fi

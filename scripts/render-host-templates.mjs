@@ -242,6 +242,22 @@ const templateDir = templates || path.join(path.dirname(new URL(import.meta.url)
 if (repoHome) {
   renderFile(path.join(templateDir, 'README.repo.md.tmpl'), path.join(target, 'README.md'), {});
   renderFile(path.join(templateDir, 'README_CN.repo.md.tmpl'), path.join(target, 'README_CN.md'), {});
+
+  // Render generic (host-agnostic) SKILL.md and config.env.example for the repo root.
+  const repoVars = {
+    HOST: 'link',
+    HOST_DISPLAY: 'Link',
+    SKILL_COMMAND: 'link-to-im',
+    DEFAULT_RUNTIME: 'auto',
+    RUNTIME_HOME: '~/.link-to-im',
+    RUNTIME_OPTIONS_EN: '`claude`, `codex`, `gemini`, `auto`',
+    RUNTIME_OPTIONS_PLAIN: 'claude | codex | gemini | auto',
+    HOST_SKILLS_DIR: '~/.<host>/skills',
+    RUNTIME_NOTES_EN: getRuntimeNotes('generic'),
+    CONFIG_RUNTIME_NOTES: getConfigRuntimeNotes('generic'),
+  };
+  renderFile(path.join(templateDir, 'SKILL.md.tmpl'), path.join(target, 'SKILL.md'), repoVars);
+  renderFile(path.join(templateDir, 'config.env.example.tmpl'), path.join(target, 'config.env.example'), repoVars);
 } else {
   const hostDisplay = titleCase(host);
   const skillCommand = `${host}-to-im`;
