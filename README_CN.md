@@ -4,8 +4,6 @@
 
 [English](README.md)
 
-> **如果你更想要桌面 GUI：** 可以看看 [CodePilot](https://github.com/op7418/CodePilot)。它提供可视化聊天、会话管理、文件树预览、权限控制等完整桌面体验。这个仓库则是其 IM bridge 的轻量 CLI / Skill 版本。
-
 ---
 
 ## 这个仓库提供什么
