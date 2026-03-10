@@ -146,8 +146,15 @@ async function main(): Promise<void> {
   const settings = configToSettings(config);
   const store = new JsonFileStore(settings);
   const pendingPerms = new PendingPermissions();
-  const llm = new RetryingLLMProvider(await resolveProvider(config, pendingPerms), store);
+  const rawProvider = await resolveProvider(config, pendingPerms);
+  const llm = new RetryingLLMProvider(rawProvider, store);
   console.log(`[${LOG_PREFIX}] Runtime: ${config.runtime}`);
+
+  // Start V2 session pool cleanup loop if using Claude SDK
+  if (rawProvider instanceof SDKLLMProvider) {
+    rawProvider.startCleanupLoop();
+    console.log(`[${LOG_PREFIX}] V2 session pool cleanup loop started`);
+  }
 
   const gateway = {
     resolvePendingPermission: (id: string, resolution: { behavior: 'allow' | 'deny'; message?: string }) =>
@@ -188,6 +195,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     const reason = signal ? `signal: ${signal}` : 'shutdown requested';
     console.log(`[${LOG_PREFIX}] Shutting down (${reason})...`);
+    if (rawProvider instanceof SDKLLMProvider) {
+      rawProvider.closeAll();
+    }
     pendingPerms.denyAll();
     await bridgeManager.stop();
     writeStatus({ running: false, lastExitReason: reason });

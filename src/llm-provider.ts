@@ -9,8 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { query, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKSession, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { LLMProvider, StreamChatParams, FileAttachment } from 'claude-to-im/src/lib/bridge/host.js';
 import type { PendingPermissions } from './permission-gateway.js';
 
@@ -629,19 +629,199 @@ export interface StreamState {
   lastAssistantText: string;
 }
 
+// ── V2 Session Pool ──
+
+const SESSION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes
+const SESSION_POOL_MAX = 10;
+const CLEANUP_INTERVAL_MS = 60 * 1000; // 60 seconds
+
+interface ManagedSession {
+  session: SDKSession;
+  workingDirectory: string | undefined;
+  lastUsedAt: number;
+  busy: boolean;
+  closed: boolean;
+}
+
 export class SDKLLMProvider implements LLMProvider {
   private cliPath: string | undefined;
   private autoApprove: boolean;
+
+  // V2 session pool
+  private sessionPool = new Map<string, ManagedSession>();
+  private deferredSessions = new Map<string, { workingDirectory?: string }>();
+  private activeControllers = new Map<string, ReadableStreamDefaultController<string>>();
+  private cleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(private pendingPerms: PendingPermissions, cliPath?: string, autoApprove = false) {
     this.cliPath = cliPath;
     this.autoApprove = autoApprove;
   }
 
+  // ── V2 Session Pool Management ──
+
+  private getPooledSession(sdkSessionId: string): ManagedSession | undefined {
+    const managed = this.sessionPool.get(sdkSessionId);
+    if (managed && !managed.closed && !managed.busy) return managed;
+    return undefined;
+  }
+
+  private createPooledSession(sdkSessionId: string, workingDirectory?: string): ManagedSession {
+    const cleanEnv = buildSubprocessEnv();
+    const pendingPerms = this.pendingPerms;
+    const activeControllers = this.activeControllers;
+    const autoApprove = this.autoApprove;
+
+    const sessionOptions: Record<string, unknown> = {
+      model: 'claude-sonnet-4-20250514',
+      env: cleanEnv,
+      canUseTool: async (
+        toolName: string,
+        input: Record<string, unknown>,
+        opts: { toolUseID: string; suggestions?: string[] },
+      ): Promise<PermissionResult> => {
+        if (autoApprove) {
+          return { behavior: 'allow' as const, updatedInput: input };
+        }
+        const ctrl = activeControllers.get(sdkSessionId);
+        if (ctrl) {
+          ctrl.enqueue(
+            sseEvent('permission_request', {
+              permissionRequestId: opts.toolUseID,
+              toolName,
+              toolInput: input,
+              suggestions: opts.suggestions || [],
+            }),
+          );
+        }
+        const result = await pendingPerms.waitFor(opts.toolUseID);
+        if (result.behavior === 'allow') {
+          return { behavior: 'allow' as const, updatedInput: input };
+        }
+        return { behavior: 'deny' as const, message: result.message || 'Denied by user' };
+      },
+    };
+    if (this.cliPath) {
+      sessionOptions.pathToClaudeCodeExecutable = this.cliPath;
+    }
+
+    // SDK V2 SDKSessionOptions doesn't expose `cwd`, but the internal
+    // process spawner reads it from its options and passes it to
+    // child_process.spawn().  The V2 wrapper doesn't forward it, so the
+    // spawned CLI inherits process.cwd().  We temporarily chdir so the
+    // subprocess starts in the correct project directory — spawn() is
+    // synchronous inside the constructor so this is safe.
+    const savedCwd = process.cwd();
+    if (workingDirectory) {
+      try { process.chdir(workingDirectory); } catch { /* ignore invalid dir */ }
+    }
+
+    let session: SDKSession;
+    try {
+      session = unstable_v2_resumeSession(
+        sdkSessionId,
+        sessionOptions as Parameters<typeof unstable_v2_resumeSession>[1],
+      );
+    } finally {
+      if (workingDirectory) {
+        try { process.chdir(savedCwd); } catch { /* ignore */ }
+      }
+    }
+
+    const managed: ManagedSession = {
+      session,
+      workingDirectory,
+      lastUsedAt: Date.now(),
+      busy: false,
+      closed: false,
+    };
+
+    // Evict oldest idle session if pool is full
+    if (this.sessionPool.size >= SESSION_POOL_MAX) {
+      let oldestId: string | null = null;
+      let oldestTime = Infinity;
+      for (const [id, ms] of this.sessionPool) {
+        if (!ms.busy && ms.lastUsedAt < oldestTime) {
+          oldestTime = ms.lastUsedAt;
+          oldestId = id;
+        }
+      }
+      if (oldestId) this.destroySession(oldestId);
+    }
+
+    this.sessionPool.set(sdkSessionId, managed);
+    console.log(`[llm-provider] V2 session pooled: ${sdkSessionId} (pool size: ${this.sessionPool.size})`);
+    return managed;
+  }
+
+  private destroySession(sdkSessionId: string): void {
+    const managed = this.sessionPool.get(sdkSessionId);
+    if (!managed) return;
+    managed.closed = true;
+    this.sessionPool.delete(sdkSessionId);
+    this.activeControllers.delete(sdkSessionId);
+    try { managed.session.close(); } catch { /* ignore close errors */ }
+    console.log(`[llm-provider] V2 session destroyed: ${sdkSessionId} (pool size: ${this.sessionPool.size})`);
+  }
+
+  startCleanupLoop(): void {
+    if (this.cleanupTimer) return;
+    this.cleanupTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, managed] of this.sessionPool) {
+        if (!managed.busy && (now - managed.lastUsedAt) > SESSION_IDLE_TIMEOUT_MS) {
+          console.log(`[llm-provider] Cleaning up idle V2 session: ${id}`);
+          this.destroySession(id);
+        }
+      }
+    }, CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
+  }
+
+  closeAll(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    for (const [id] of this.sessionPool) {
+      this.destroySession(id);
+    }
+    console.log('[llm-provider] All V2 sessions closed');
+  }
+
+  // ── Routing: streamChat dispatches to V1 or V2 ──
+
   streamChat(params: StreamChatParams): ReadableStream<string> {
+    const sdkSessionId = params.sdkSessionId;
+    if (sdkSessionId) {
+      const managed = this.getPooledSession(sdkSessionId);
+      if (managed) {
+        console.log(`[llm-provider] V2 fast path for session: ${sdkSessionId}`);
+        return this.streamChatV2(params, managed, sdkSessionId);
+      }
+      const deferred = this.deferredSessions.get(sdkSessionId);
+      if (deferred) {
+        this.deferredSessions.delete(sdkSessionId);
+        try {
+          const newManaged = this.createPooledSession(sdkSessionId, deferred.workingDirectory);
+          console.log(`[llm-provider] V2 lazy-created for session: ${sdkSessionId}`);
+          return this.streamChatV2(params, newManaged, sdkSessionId);
+        } catch (e) {
+          console.warn('[llm-provider] V2 lazy creation failed, falling back to V1:', e instanceof Error ? e.message : e);
+        }
+      }
+    }
+    console.log(`[llm-provider] V1 path${sdkSessionId ? ` (no pooled session for ${sdkSessionId})` : ' (new session)'}`);
+    return this.streamChatV1(params);
+  }
+
+  // ── V1 Path: query() — original logic + deferred V2 session ──
+
+  private streamChatV1(params: StreamChatParams): ReadableStream<string> {
     const pendingPerms = this.pendingPerms;
     const cliPath = this.cliPath;
     const autoApprove = this.autoApprove;
+    const self = this;
 
     return new ReadableStream({
       start(controller) {
@@ -745,6 +925,18 @@ export class SDKLLMProvider implements LLMProvider {
             });
             for await (const msg of q) {
               handleMessage(msg, controller, state);
+
+              // Defer V2 session creation — don't spawn now, create lazily on next message
+              if (
+                msg.type === 'result' &&
+                msg.subtype === 'success' &&
+                msg.session_id &&
+                !self.sessionPool.has(msg.session_id) &&
+                !self.deferredSessions.has(msg.session_id)
+              ) {
+                self.deferredSessions.set(msg.session_id, { workingDirectory: params.workingDirectory });
+                console.log(`[llm-provider] V2 session deferred: ${msg.session_id}`);
+              }
             }
 
             controller.close();
@@ -815,6 +1007,84 @@ export class SDKLLMProvider implements LLMProvider {
             controller.enqueue(sseEvent('error', userMessage));
             controller.close();
           } finally {
+            cleanupPromptFiles();
+          }
+        })();
+      },
+    });
+  }
+
+  // ── V2 Path: persistent session, fast send() ──
+
+  private streamChatV2(params: StreamChatParams, managed: ManagedSession, sdkSessionId: string): ReadableStream<string> {
+    const self = this;
+
+    return new ReadableStream({
+      start(controller) {
+        (async () => {
+          let cleanupPromptFiles = () => {};
+          managed.busy = true;
+          managed.lastUsedAt = Date.now();
+          self.activeControllers.set(sdkSessionId, controller);
+
+          const onAbort = () => {
+            console.log(`[llm-provider] V2 session aborted: ${sdkSessionId}`);
+            self.destroySession(sdkSessionId);
+          };
+          params.abortController?.signal.addEventListener('abort', onAbort, { once: true });
+
+          try {
+            const promptInput = buildPrompt(params.prompt, params.files);
+            cleanupPromptFiles = promptInput.cleanup;
+
+            const promptText = typeof promptInput.prompt === 'string'
+              ? promptInput.prompt
+              : params.prompt;
+
+            await managed.session.send(promptText);
+
+            const streamGen = managed.session.stream();
+            const state: StreamState = {
+              hasReceivedResult: false,
+              hasStreamedText: false,
+              sawTextDelta: false,
+              seenToolUseIds: new Set<string>(),
+              lastAssistantText: '',
+            };
+
+            for await (const msg of streamGen) {
+              if (managed.closed) break;
+              handleMessage(msg, controller, state);
+            }
+
+            controller.close();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[llm-provider] V2 error for ${sdkSessionId}:`, err instanceof Error ? err.stack || err.message : err);
+
+            self.destroySession(sdkSessionId);
+
+            // Fallback to V1 transparently
+            console.log(`[llm-provider] Falling back to V1 for current message`);
+            try {
+              const v1Stream = self.streamChatV1(params);
+              const reader = v1Stream.getReader();
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+              controller.close();
+            } catch (v1Err) {
+              const v1Message = v1Err instanceof Error ? v1Err.message : String(v1Err);
+              console.error('[llm-provider] V1 fallback also failed:', v1Message);
+              controller.enqueue(sseEvent('error', v1Message));
+              controller.close();
+            }
+          } finally {
+            managed.busy = false;
+            self.activeControllers.delete(sdkSessionId);
+            params.abortController?.signal.removeEventListener('abort', onAbort);
             cleanupPromptFiles();
           }
         })();
