@@ -15,6 +15,10 @@ const patches = [
     source: path.join(projectRoot, 'patches', 'claude-to-im', 'feishu-adapter.ts'),
     target: path.join(projectRoot, 'node_modules', 'claude-to-im', 'src', 'lib', 'bridge', 'adapters', 'feishu-adapter.ts'),
   },
+  {
+    source: path.join(projectRoot, 'patches', 'claude-to-im', 'discord-adapter.ts'),
+    target: path.join(projectRoot, 'node_modules', 'claude-to-im', 'src', 'lib', 'bridge', 'adapters', 'discord-adapter.ts'),
+  },
 ];
 
 let applied = 0;
