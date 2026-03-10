@@ -20,6 +20,7 @@ import { JsonFileStore } from './store.js';
 import { SDKLLMProvider, resolveClaudeCliPath, resolveGeminiCliPath, preflightCheck } from './llm-provider.js';
 import { GeminiProvider } from './gemini-provider.js';
 import { PendingPermissions } from './permission-gateway.js';
+import { RetryingLLMProvider } from './retry-provider.js';
 import { setupLogger } from './logger.js';
 
 const RUNTIME_DIR = path.join(CTI_HOME, 'runtime');
@@ -145,7 +146,7 @@ async function main(): Promise<void> {
   const settings = configToSettings(config);
   const store = new JsonFileStore(settings);
   const pendingPerms = new PendingPermissions();
-  const llm = await resolveProvider(config, pendingPerms);
+  const llm = new RetryingLLMProvider(await resolveProvider(config, pendingPerms), store);
   console.log(`[${LOG_PREFIX}] Runtime: ${config.runtime}`);
 
   const gateway = {

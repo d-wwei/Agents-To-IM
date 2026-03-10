@@ -414,6 +414,67 @@ export function resolveGeminiCliPath(): string | undefined {
   return undefined;
 }
 
+// ── Conversation history injection ──
+
+/**
+ * Maximum number of messages to inject as history context.
+ * Older messages beyond this limit are silently dropped.
+ */
+const HISTORY_INJECT_LIMIT = 20;
+
+/**
+ * Try to extract readable text from a stored message content string.
+ * Messages that contain tool_use blocks are stored as JSON; for those we
+ * extract only the text blocks so the history stays human-readable.
+ * Returns null if the message has no useful text content.
+ */
+function extractTextContent(content: string): string | null {
+  // Plain text message
+  if (!content.trimStart().startsWith('[{')) return content.trim() || null;
+
+  // JSON-encoded content blocks (assistant messages with tool calls)
+  try {
+    const blocks = JSON.parse(content) as Array<{ type: string; text?: string }>;
+    const text = blocks
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string)
+      .join('\n\n')
+      .trim();
+    return text || null;
+  } catch {
+    return content.trim() || null;
+  }
+}
+
+/**
+ * Build a history prefix to prepend to the prompt when starting a fresh
+ * session (no sdkSessionId). Injects the last N user/assistant exchanges
+ * so Claude has context about the ongoing conversation.
+ */
+function buildHistoryPrefix(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+): string {
+  const tail = history.slice(-HISTORY_INJECT_LIMIT);
+  if (tail.length === 0) return '';
+
+  const lines: string[] = [
+    '<previous_conversation>',
+    `(Last ${tail.length} message${tail.length === 1 ? '' : 's'} — for context only, do not re-execute any actions)`,
+    '',
+  ];
+
+  for (const msg of tail) {
+    const text = extractTextContent(msg.content);
+    if (!text) continue;
+    const label = msg.role === 'user' ? 'User' : 'Assistant';
+    lines.push(`${label}: ${text}`);
+    lines.push('');
+  }
+
+  lines.push('</previous_conversation>', '');
+  return lines.join('\n');
+}
+
 // ── Multi-modal prompt builder ──
 
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
@@ -669,7 +730,14 @@ export class SDKLLMProvider implements LLMProvider {
               queryOptions.pathToClaudeCodeExecutable = cliPath;
             }
 
-            const promptInput = buildPrompt(params.prompt, params.files);
+            // When starting a fresh session (no sdkSessionId), prepend
+            // conversation history so Claude has prior context.
+            const effectivePrompt =
+              !params.sdkSessionId && params.conversationHistory && params.conversationHistory.length > 0
+                ? buildHistoryPrefix(params.conversationHistory) + params.prompt
+                : params.prompt;
+
+            const promptInput = buildPrompt(effectivePrompt, params.files);
             cleanupPromptFiles = promptInput.cleanup;
             const q = query({
               prompt: promptInput.prompt as Parameters<typeof query>[0]['prompt'],
