@@ -10,6 +10,7 @@ CTI_HOME="${CTI_HOME:-$CTI_HOME_DEFAULT}"
 CONFIG_FILE="$CTI_HOME/config.env"
 PID_FILE="$CTI_HOME/runtime/bridge.pid"
 LOG_FILE="$CTI_HOME/logs/bridge.log"
+DIAG_DIR="$CTI_HOME/runtime/diagnostics"
 
 PASS=0
 FAIL=0
@@ -24,6 +25,10 @@ check() {
     echo "[FAIL] $label"
     FAIL=$((FAIL + 1))
   fi
+}
+
+latest_diagnostic() {
+  find "$DIAG_DIR" -type f -name '*.json' 2>/dev/null | sort | tail -1
 }
 
 # --- Node.js version ---
@@ -408,6 +413,20 @@ else
   check "Log directory is writable ($LOG_DIR)" 1
 fi
 
+# --- Diagnostics directory ---
+if [ -d "$DIAG_DIR" ]; then
+  check "Diagnostics directory exists" 0
+else
+  check "Diagnostics directory exists ($DIAG_DIR will be created on next start)" 0
+fi
+
+LATEST_DIAG="$(latest_diagnostic)"
+if [ -n "$LATEST_DIAG" ]; then
+  check "Latest diagnostic snapshot available" 0
+else
+  check "Latest diagnostic snapshot available (none yet)" 0
+fi
+
 # --- PID file consistency ---
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
@@ -447,6 +466,9 @@ fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
+if [ -n "${LATEST_DIAG:-}" ]; then
+  echo "Latest diagnostic snapshot: $LATEST_DIAG"
+fi
 
 if [ "$FAIL" -gt 0 ]; then
   echo ""

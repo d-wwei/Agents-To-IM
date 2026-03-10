@@ -13,7 +13,7 @@ LOG_FILE="$CTI_HOME/logs/bridge.log"
 
 # ── Common helpers ──
 
-ensure_dirs() { mkdir -p "$CTI_HOME"/{data,logs,runtime,data/messages}; }
+ensure_dirs() { mkdir -p "$CTI_HOME"/{data,logs,runtime,runtime/diagnostics,data/messages}; }
 
 ensure_built() {
   local need_build=0
@@ -98,6 +98,15 @@ show_last_exit_reason() {
     reason=$(grep -o '"lastExitReason"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATUS_FILE" 2>/dev/null | head -1 | sed 's/.*: *"//;s/"$//')
     [ -n "$reason" ] && echo "Last exit reason: $reason"
   fi
+}
+
+show_latest_diagnostic() {
+  local diag_dir="$CTI_HOME/runtime/diagnostics"
+  [ -d "$diag_dir" ] || return 0
+  local latest
+  latest=$(find "$diag_dir" -type f -name '*.json' 2>/dev/null | sort | tail -1)
+  [ -n "$latest" ] || return 0
+  echo "Latest diagnostic: $latest"
 }
 
 show_failure_help() {
@@ -224,6 +233,7 @@ case "${1:-help}" in
       [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
       show_last_exit_reason
     fi
+    show_latest_diagnostic
     ;;
 
   logs)

@@ -343,6 +343,46 @@ describe('JsonFileStore', { concurrency: false }, () => {
     assert.ok(meta?.last_active_at);
   });
 
+  it('setSessionRuntimeStatus persists runtime state in session metadata', () => {
+    const store = new JsonFileStore(makeSettings());
+    const session = store.createSession('test', 'model', undefined, '/tmp');
+    store.setSessionRuntimeStatus(session.id, 'running');
+
+    const meta = store.getSessionMeta(session.id);
+    assert.equal(meta?.runtime_status, 'running');
+    assert.ok(meta?.runtime_updated_at);
+  });
+
+  it('creates, updates, and lists resumable tasks', () => {
+    const store = new JsonFileStore(makeSettings());
+    const session = store.createSession('test', 'model', undefined, '/tmp');
+    const task = store.createTask({
+      sessionId: session.id,
+      channelType: 'discord',
+      chatId: 'chat-1',
+      messageId: 'msg-1',
+      promptText: 'continue bridge upgrade check',
+      sdkSessionIdAtStart: 'sdk-1',
+    });
+
+    store.updateTask(task.id, {
+      status: 'timed_out',
+      last_error: 'watchdog fired',
+      diagnostic_path: '/tmp/diag.json',
+    });
+
+    const fetched = store.getTask(task.id);
+    assert.equal(fetched?.status, 'timed_out');
+    assert.equal(fetched?.last_error, 'watchdog fired');
+
+    const resumable = store.getLatestResumableTask('discord', 'chat-1');
+    assert.equal(resumable?.id, task.id);
+
+    const listed = store.listTasks({ chatId: 'chat-1', limit: 5 });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, task.id);
+  });
+
   // ── Provider (no-op) ──
 
   it('getProvider returns undefined', () => {

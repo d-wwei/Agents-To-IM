@@ -25,6 +25,7 @@ import { CTI_HOME } from './config.js';
 const DATA_DIR = path.join(CTI_HOME, 'data');
 const MESSAGES_DIR = path.join(DATA_DIR, 'messages');
 const SESSION_META_FILE = path.join(DATA_DIR, 'session-meta.json');
+const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
 
 // ── Helpers ──
 
@@ -76,12 +77,49 @@ export interface SessionMeta {
   archive_summary?: string;
   last_channel_type?: string;
   last_chat_id?: string;
+  runtime_status?: string;
+  runtime_updated_at?: string;
 }
 
 export interface SessionRecord {
   session: BridgeSession;
   meta: SessionMeta;
   bindings: ChannelBinding[];
+}
+
+export type BridgeTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_permission'
+  | 'interrupted'
+  | 'timed_out'
+  | 'failed'
+  | 'completed'
+  | 'aborted'
+  | 'resumed';
+
+export interface BridgeTaskRecord {
+  id: string;
+  session_id: string;
+  channel_type: string;
+  chat_id: string;
+  message_id: string;
+  prompt_text: string;
+  status: BridgeTaskStatus;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  completed_at?: string;
+  sdk_session_id_at_start?: string;
+  sdk_session_id_at_end?: string;
+  last_partial_text?: string;
+  final_response_preview?: string;
+  last_error?: string;
+  diagnostic_path?: string;
+  permission_request_id?: string;
+  permission_tool_name?: string;
+  resume_count?: number;
+  resumed_from_task_id?: string;
 }
 
 // ── Store ──
@@ -97,6 +135,7 @@ export class JsonFileStore implements BridgeStore {
   private dedupKeys = new Map<string, number>();
   private locks = new Map<string, LockEntry>();
   private auditLog: Array<AuditLogInput & { id: string; createdAt: string }> = [];
+  private tasks = new Map<string, BridgeTaskRecord>();
 
   constructor(settingsMap: Map<string, string>) {
     this.settings = settingsMap;
@@ -160,6 +199,11 @@ export class JsonFileStore implements BridgeStore {
 
     // Audit
     this.auditLog = readJson(path.join(DATA_DIR, 'audit.json'), []);
+
+    const tasks = readJson<Record<string, BridgeTaskRecord>>(TASKS_FILE, {});
+    for (const [id, task] of Object.entries(tasks)) {
+      this.tasks.set(id, task);
+    }
   }
 
   private persistSessions(): void {
@@ -203,6 +247,10 @@ export class JsonFileStore implements BridgeStore {
 
   private persistAudit(): void {
     writeJson(path.join(DATA_DIR, 'audit.json'), this.auditLog);
+  }
+
+  private persistTasks(): void {
+    writeJson(TASKS_FILE, Object.fromEntries(this.tasks));
   }
 
   private persistMessages(sessionId: string): void {
@@ -441,7 +489,10 @@ export class JsonFileStore implements BridgeStore {
   }
 
   setSessionRuntimeStatus(_sessionId: string, _status: string): void {
-    // no-op for file-based store
+    this.upsertSessionMeta(_sessionId, {
+      runtime_status: _status,
+      runtime_updated_at: now(),
+    });
   }
 
   // ── SDK Session ──
@@ -529,6 +580,92 @@ export class JsonFileStore implements BridgeStore {
 
   insertOutboundRef(_ref: OutboundRefInput): void {
     // no-op for file-based store
+  }
+
+  // ── Tasks ──
+
+  createTask(input: {
+    sessionId: string;
+    channelType: string;
+    chatId: string;
+    messageId: string;
+    promptText: string;
+    sdkSessionIdAtStart?: string;
+    resumedFromTaskId?: string;
+  }): BridgeTaskRecord {
+    const timestamp = now();
+    const task: BridgeTaskRecord = {
+      id: uuid(),
+      session_id: input.sessionId,
+      channel_type: input.channelType,
+      chat_id: input.chatId,
+      message_id: input.messageId,
+      prompt_text: input.promptText,
+      status: 'queued',
+      created_at: timestamp,
+      updated_at: timestamp,
+      started_at: timestamp,
+      sdk_session_id_at_start: input.sdkSessionIdAtStart,
+      resumed_from_task_id: input.resumedFromTaskId,
+      resume_count: input.resumedFromTaskId ? 1 : 0,
+    };
+    this.tasks.set(task.id, task);
+    this.persistTasks();
+    return task;
+  }
+
+  updateTask(taskId: string, updates: Partial<BridgeTaskRecord>): BridgeTaskRecord | null {
+    const existing = this.tasks.get(taskId);
+    if (!existing) return null;
+    const updated: BridgeTaskRecord = {
+      ...existing,
+      ...updates,
+      updated_at: now(),
+    };
+    this.tasks.set(taskId, updated);
+    this.persistTasks();
+    return updated;
+  }
+
+  getTask(taskId: string): BridgeTaskRecord | null {
+    return this.tasks.get(taskId) ?? null;
+  }
+
+  listTasks(filter?: {
+    sessionId?: string;
+    channelType?: string;
+    chatId?: string;
+    statuses?: BridgeTaskStatus[];
+    limit?: number;
+  }): BridgeTaskRecord[] {
+    let items = Array.from(this.tasks.values());
+    if (filter?.sessionId) {
+      items = items.filter((task) => task.session_id === filter.sessionId);
+    }
+    if (filter?.channelType) {
+      items = items.filter((task) => task.channel_type === filter.channelType);
+    }
+    if (filter?.chatId) {
+      items = items.filter((task) => task.chat_id === filter.chatId);
+    }
+    if (filter?.statuses && filter.statuses.length > 0) {
+      const allowed = new Set(filter.statuses);
+      items = items.filter((task) => allowed.has(task.status));
+    }
+    items.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    if (filter?.limit && filter.limit > 0) {
+      return items.slice(0, filter.limit);
+    }
+    return items;
+  }
+
+  getLatestResumableTask(channelType: string, chatId: string): BridgeTaskRecord | null {
+    return this.listTasks({
+      channelType,
+      chatId,
+      statuses: ['interrupted', 'timed_out', 'failed', 'aborted'],
+      limit: 1,
+    })[0] ?? null;
   }
 
   // ── Permission Links ──

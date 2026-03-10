@@ -27,6 +27,40 @@ const MIME_EXT: Record<string, string> = {
   'image/webp': '.webp',
 };
 
+const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getCodexTurnTimeoutMs(): number {
+  return parsePositiveIntEnv('CTI_CODEX_TURN_TIMEOUT_MS', DEFAULT_TURN_TIMEOUT_MS);
+}
+
+function getCodexIdleTimeoutMs(): number {
+  return parsePositiveIntEnv('CTI_CODEX_IDLE_TIMEOUT_MS', DEFAULT_IDLE_TIMEOUT_MS);
+}
+
+function makeAbortError(message: string): Error {
+  const err = new Error(message);
+  err.name = 'AbortError';
+  return err;
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const lower = err.message.toLowerCase();
+  return err.name === 'AbortError'
+    || lower.includes('aborted')
+    || lower.includes('aborterror')
+    || lower.includes('signal sigterm')
+    || lower.includes('signal sigint');
+}
+
 function sanitizeAttachmentBaseName(name?: string): string {
   const raw = (name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
   return raw || 'attachment';
@@ -238,6 +272,61 @@ export class CodexProvider implements LLMProvider {
       start(controller) {
         (async () => {
           const tempFiles: string[] = [];
+          const turnAbort = new AbortController();
+          const turnTimeoutMs = getCodexTurnTimeoutMs();
+          const idleTimeoutMs = getCodexIdleTimeoutMs();
+          let abortReason: string | null = null;
+          let turnTimer: ReturnType<typeof setTimeout> | null = null;
+          let idleTimer: ReturnType<typeof setTimeout> | null = null;
+          let removeOuterAbortListener: (() => void) | null = null;
+
+          const clearTimers = () => {
+            if (turnTimer) {
+              clearTimeout(turnTimer);
+              turnTimer = null;
+            }
+            if (idleTimer) {
+              clearTimeout(idleTimer);
+              idleTimer = null;
+            }
+          };
+
+          const abortTurn = (message: string) => {
+            if (turnAbort.signal.aborted) return;
+            abortReason = message;
+            turnAbort.abort(makeAbortError(message));
+          };
+
+          const armIdleTimer = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => {
+              abortTurn(
+                `Codex request stalled for ${Math.round(idleTimeoutMs / 1000)}s without streaming progress`,
+              );
+            }, idleTimeoutMs);
+            idleTimer.unref?.();
+          };
+
+          if (params.abortController?.signal.aborted) {
+            abortTurn('Codex request cancelled by bridge');
+          } else if (params.abortController) {
+            const onOuterAbort = () => abortTurn('Codex request cancelled by bridge');
+            params.abortController.signal.addEventListener('abort', onOuterAbort, { once: true });
+            removeOuterAbortListener = () => {
+              params.abortController?.signal.removeEventListener('abort', onOuterAbort);
+            };
+          }
+
+          if (!turnAbort.signal.aborted) {
+            turnTimer = setTimeout(() => {
+              abortTurn(
+                `Codex request exceeded ${Math.round(turnTimeoutMs / 1000)}s and was cancelled`,
+              );
+            }, turnTimeoutMs);
+            turnTimer.unref?.();
+            armIdleTimer();
+          }
+
           try {
             const { codex } = await self.ensureSDK();
 
@@ -275,6 +364,10 @@ export class CodexProvider implements LLMProvider {
             let retryFresh = false;
 
             while (true) {
+              if (turnAbort.signal.aborted) {
+                throw turnAbort.signal.reason ?? makeAbortError(abortReason || 'Codex request aborted');
+              }
+
               let thread: ThreadInstance;
               if (savedThreadId) {
                 try {
@@ -287,14 +380,15 @@ export class CodexProvider implements LLMProvider {
               }
 
               let sawAnyEvent = false;
+              let sawTerminalEvent = false;
               try {
-                const { events } = await thread.runStreamed(input);
+                const { events } = await thread.runStreamed(input, {
+                  signal: turnAbort.signal,
+                });
 
                 for await (const event of events) {
                   sawAnyEvent = true;
-                  if (params.abortController?.signal.aborted) {
-                    break;
-                  }
+                  armIdleTimer();
 
                   switch (event.type) {
                     case 'thread.started': {
@@ -314,6 +408,7 @@ export class CodexProvider implements LLMProvider {
                     }
 
                     case 'turn.completed': {
+                      sawTerminalEvent = true;
                       const usage = event.usage as Record<string, unknown> | undefined;
                       const threadId = self.threadIds.get(params.sessionId);
 
@@ -329,12 +424,15 @@ export class CodexProvider implements LLMProvider {
                     }
 
                     case 'turn.failed': {
-                      const error = (event as { message?: string }).message;
+                      sawTerminalEvent = true;
+                      const error = (event as { error?: { message?: string }; message?: string }).error?.message
+                        || (event as { message?: string }).message;
                       controller.enqueue(sseEvent('error', error || 'Turn failed'));
                       break;
                     }
 
                     case 'error': {
+                      sawTerminalEvent = true;
                       const error = (event as { message?: string }).message;
                       controller.enqueue(sseEvent('error', error || 'Thread error'));
                       break;
@@ -342,6 +440,13 @@ export class CodexProvider implements LLMProvider {
 
                     // item.started, item.updated, turn.started — no action needed
                   }
+                }
+
+                if (turnAbort.signal.aborted) {
+                  throw turnAbort.signal.reason ?? makeAbortError(abortReason || 'Codex request aborted');
+                }
+                if (!sawTerminalEvent) {
+                  throw new Error('Codex stream ended without a terminal event');
                 }
                 break;
               } catch (err) {
@@ -358,7 +463,11 @@ export class CodexProvider implements LLMProvider {
 
             controller.close();
           } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+            const message = abortReason && isAbortError(err)
+              ? abortReason
+              : err instanceof Error
+                ? err.message
+                : String(err);
             console.error('[codex-provider] Error:', err instanceof Error ? err.stack || err.message : err);
             try {
               controller.enqueue(sseEvent('error', message));
@@ -371,6 +480,8 @@ export class CodexProvider implements LLMProvider {
             for (const tmp of tempFiles) {
               try { fs.unlinkSync(tmp); } catch { /* ignore */ }
             }
+            clearTimers();
+            removeOuterAbortListener?.();
           }
         })();
       },

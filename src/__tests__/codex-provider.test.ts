@@ -540,11 +540,100 @@ describe('CodexProvider', () => {
     assert.ok(!errorEvent, 'Retry success should not emit error');
     assert.ok(resultEvent, 'Retry success should emit result');
   });
+
+  it('passes AbortSignal to runStreamed and surfaces bridge aborts', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions());
+
+    let capturedSignal: AbortSignal | undefined;
+    const mockThread = {
+      runStreamed: (_input: unknown, opts?: { signal?: AbortSignal }) => {
+        capturedSignal = opts?.signal;
+        return {
+          events: (async function* () {
+            await new Promise((_, reject) => {
+              opts?.signal?.addEventListener('abort', () => {
+                reject(opts.signal?.reason ?? new Error('aborted'));
+              }, { once: true });
+            });
+          })(),
+        };
+      },
+    };
+
+    (provider as any).sdk = { Codex: class { constructor() {} } };
+    (provider as any).codex = {
+      startThread: () => mockThread,
+    };
+
+    const outerAbort = new AbortController();
+    const stream = provider.streamChat({
+      prompt: 'abort me',
+      sessionId: 'abort-session',
+      abortController: outerAbort,
+    });
+
+    setTimeout(() => outerAbort.abort(), 20);
+    const chunks = await collectStream(stream);
+    const events = parseSSEChunks(chunks);
+    const errorEvent = events.find(e => e.type === 'error');
+
+    assert.ok(capturedSignal, 'runStreamed should receive a signal');
+    assert.ok(capturedSignal?.aborted, 'signal should be aborted when the bridge aborts');
+    assert.ok(errorEvent, 'abort should surface as an error event');
+    assert.equal(errorEvent!.data, 'Codex request cancelled by bridge');
+  });
+
+  it('aborts stalled Codex turns after the configured idle timeout', async () => {
+    const oldIdleTimeout = process.env.CTI_CODEX_IDLE_TIMEOUT_MS;
+    process.env.CTI_CODEX_IDLE_TIMEOUT_MS = '30';
+
+    try {
+      const { CodexProvider } = await import('../codex-provider.js');
+      const { PendingPermissions } = await import('../permission-gateway.js');
+      const provider = new CodexProvider(new PendingPermissions());
+
+      const mockThread = {
+        runStreamed: (_input: unknown, opts?: { signal?: AbortSignal }) => ({
+          events: (async function* () {
+            yield { type: 'thread.started', thread_id: 'stalled-thread' };
+            await new Promise((_, reject) => {
+              opts?.signal?.addEventListener('abort', () => {
+                reject(opts.signal?.reason ?? new Error('aborted'));
+              }, { once: true });
+            });
+          })(),
+        }),
+      };
+
+      (provider as any).sdk = { Codex: class { constructor() {} } };
+      (provider as any).codex = {
+        startThread: () => mockThread,
+      };
+
+      const chunks = await collectStream(provider.streamChat({
+        prompt: 'stall test',
+        sessionId: 'stall-session',
+      }));
+      const events = parseSSEChunks(chunks);
+      const statusEvent = events.find(e => e.type === 'status');
+      const errorEvent = events.find(e => e.type === 'error');
+
+      assert.ok(statusEvent, 'thread.started should still be forwarded');
+      assert.ok(errorEvent, 'stalled stream should emit an error event');
+      assert.match(errorEvent!.data, /stalled for/i);
+    } finally {
+      if (oldIdleTimeout === undefined) {
+        delete process.env.CTI_CODEX_IDLE_TIMEOUT_MS;
+      } else {
+        process.env.CTI_CODEX_IDLE_TIMEOUT_MS = oldIdleTimeout;
+      }
+    }
+  });
 });
 
 // ── Image input building tests ──────────────────────────────
-
-import fs from 'node:fs';
 
 /** Helper: build a full FileAttachment object for tests. */
 function makeFile(type: string, data: string, name = 'test-file') {
@@ -860,5 +949,34 @@ describe('CodexProvider error events', () => {
     const errorEvent = events.find(e => e.type === 'error');
     assert.ok(errorEvent);
     assert.equal(errorEvent!.data, 'Turn failed');
+  });
+
+  it('reads error.message from turn.failed events', async () => {
+    const { CodexProvider } = await import('../codex-provider.js');
+    const { PendingPermissions } = await import('../permission-gateway.js');
+    const provider = new CodexProvider(new PendingPermissions());
+
+    const mockThread = {
+      runStreamed: () => ({
+        events: (async function* () {
+          yield { type: 'turn.failed', error: { message: 'Resume mismatch' } };
+        })(),
+      }),
+    };
+    (provider as any).sdk = {
+      Codex: class { constructor() {} },
+    };
+    (provider as any).codex = {
+      startThread: () => mockThread,
+    };
+
+    const chunks = await collectStream(provider.streamChat({
+      prompt: 'test',
+      sessionId: 'err-session-4',
+    }));
+    const events = parseSSEChunks(chunks);
+    const errorEvent = events.find(e => e.type === 'error');
+    assert.ok(errorEvent, 'Should emit an error event');
+    assert.equal(errorEvent!.data, 'Resume mismatch');
   });
 });

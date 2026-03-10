@@ -22,6 +22,7 @@ import { getBridgeContext } from './context';
 import { escapeHtml } from './adapters/telegram-utils';
 import { tryHandleSessionManagementCommand } from '../../../../../src/session-command-support.js';
 import { prepareVoiceReply, wantsVoiceReply, type GeneratedVoiceReply } from '../../../../../src/voice-reply.js';
+import { writeTaskDiagnosticSnapshot } from '../../../../../src/diagnostics.js';
 import {
   validateWorkingDirectory,
   validateSessionId,
@@ -50,6 +51,14 @@ const STREAM_DEFAULTS: Record<string, StreamConfig> = {
   telegram: { intervalMs: 700, minDeltaChars: 20, maxChars: 3900 },
   discord: { intervalMs: 1500, minDeltaChars: 40, maxChars: 1900 },
 };
+
+const DEFAULT_TASK_WATCHDOG_MS = 12 * 60 * 1000;
+
+function getTaskWatchdogMs(): number {
+  const fromEnv = Number.parseInt(process.env.CTI_TASK_WATCHDOG_MS || '', 10);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return DEFAULT_TASK_WATCHDOG_MS;
+}
 
 function getStreamConfig(channelType = 'telegram'): StreamConfig {
   const { store } = getBridgeContext();
@@ -156,6 +165,58 @@ interface BridgeManagerState {
   autoStartChecked: boolean;
 }
 
+type TaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_permission'
+  | 'interrupted'
+  | 'timed_out'
+  | 'failed'
+  | 'completed'
+  | 'aborted'
+  | 'resumed';
+
+interface TaskRecord {
+  id: string;
+  session_id: string;
+  channel_type: string;
+  chat_id: string;
+  message_id: string;
+  prompt_text: string;
+  status: TaskStatus;
+  created_at: string;
+  updated_at: string;
+  last_partial_text?: string;
+  final_response_preview?: string;
+  last_error?: string;
+  diagnostic_path?: string;
+  permission_request_id?: string;
+  permission_tool_name?: string;
+  resumed_from_task_id?: string;
+}
+
+interface TaskStore {
+  createTask(input: {
+    sessionId: string;
+    channelType: string;
+    chatId: string;
+    messageId: string;
+    promptText: string;
+    sdkSessionIdAtStart?: string;
+    resumedFromTaskId?: string;
+  }): TaskRecord;
+  updateTask(taskId: string, updates: Partial<TaskRecord>): TaskRecord | null;
+  listTasks(filter?: {
+    sessionId?: string;
+    channelType?: string;
+    chatId?: string;
+    statuses?: TaskStatus[];
+    limit?: number;
+  }): TaskRecord[];
+  getLatestResumableTask(channelType: string, chatId: string): TaskRecord | null;
+  getSessionMeta?(sessionId: string): { [key: string]: unknown } | null;
+}
+
 function getState(): BridgeManagerState {
   const g = globalThis as unknown as Record<string, BridgeManagerState>;
   if (!g[GLOBAL_KEY]) {
@@ -193,6 +254,82 @@ function processWithSessionLock(sessionId: string, fn: () => Promise<void>): Pro
     }
   });
   return current;
+}
+
+function asTaskStore(store: unknown): TaskStore | null {
+  const candidate = store as Partial<TaskStore>;
+  if (
+    typeof candidate.createTask === 'function'
+    && typeof candidate.updateTask === 'function'
+    && typeof candidate.listTasks === 'function'
+    && typeof candidate.getLatestResumableTask === 'function'
+  ) {
+    return candidate as TaskStore;
+  }
+  return null;
+}
+
+function compactTaskText(value: string, maxLength = 180): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, maxLength - 3)}...`;
+}
+
+function formatTaskStatus(status: string): string {
+  switch (status) {
+    case 'running': return '运行中';
+    case 'waiting_permission': return '等待权限';
+    case 'interrupted': return '已中断';
+    case 'timed_out': return '超时';
+    case 'failed': return '失败';
+    case 'completed': return '已完成';
+    case 'aborted': return '已停止';
+    case 'resumed': return '已恢复';
+    default: return status || '未知';
+  }
+}
+
+function buildResumePrompt(task: TaskRecord): string {
+  const lines = [
+    'Continue the previously interrupted bridge task.',
+    'Treat this as a recovery run for the same user request.',
+    'Avoid repeating work that is already clearly complete unless verification is necessary.',
+    '',
+    `Original user request: ${task.prompt_text}`,
+  ];
+  if (task.last_partial_text) {
+    lines.push(`Last partial response: ${compactTaskText(task.last_partial_text, 600)}`);
+  }
+  if (task.last_error) {
+    lines.push(`Interruption reason: ${task.last_error}`);
+  }
+  lines.push('If prior work may have partially succeeded, inspect the workspace before redoing actions.');
+  return lines.join('\n');
+}
+
+function formatTaskList(tasks: TaskRecord[]): string {
+  if (tasks.length === 0) {
+    return 'No recent bridge tasks found.';
+  }
+
+  const lines = ['<b>Recent Tasks</b>', ''];
+  for (const task of tasks) {
+    lines.push(
+      `• <code>${escapeHtml(task.id.slice(0, 8))}...</code> ${escapeHtml(formatTaskStatus(task.status))} ${escapeHtml(task.updated_at)}`,
+    );
+    lines.push(`  ${escapeHtml(compactTaskText(task.prompt_text, 120))}`);
+  }
+  return lines.join('\n');
+}
+
+function getLatestUserPromptFromMessages(messages: Array<{ role?: string; content?: string }>): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user') continue;
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (content) return content;
+  }
+  return null;
 }
 
 /**
@@ -404,6 +541,299 @@ function runAdapterLoop(adapter: BaseChannelAdapter): void {
   });
 }
 
+async function executeBoundTask(
+  adapter: BaseChannelAdapter,
+  msg: InboundMessage,
+  binding: ReturnType<typeof router.resolve>,
+  input: {
+    rawText: string;
+    promptText: string;
+    taskPromptText: string;
+    resumedFromTaskId?: string;
+  },
+): Promise<void> {
+  const { store } = getBridgeContext();
+  const taskStore = asTaskStore(store);
+
+  // Notify adapter that message processing is starting (e.g., typing indicator)
+  adapter.onMessageStart?.(msg.address.chatId);
+
+  // Create an AbortController so /stop can cancel this task externally
+  const taskAbort = new AbortController();
+  const state = getState();
+  state.activeTasks.set(binding.codepilotSessionId, taskAbort);
+
+  const task = taskStore?.createTask({
+    sessionId: binding.codepilotSessionId,
+    channelType: adapter.channelType,
+    chatId: msg.address.chatId,
+    messageId: msg.messageId,
+    promptText: input.taskPromptText,
+    sdkSessionIdAtStart: binding.sdkSessionId,
+    resumedFromTaskId: input.resumedFromTaskId,
+  }) || null;
+  if (task) {
+    taskStore?.updateTask(task.id, { status: 'running' });
+  }
+
+  // ── Streaming preview setup ──────────────────────────────────
+  let previewState: StreamingPreviewState | null = null;
+  const caps = adapter.getPreviewCapabilities?.(msg.address.chatId) ?? null;
+  if (caps?.supported) {
+    previewState = {
+      draftId: generateDraftId(),
+      chatId: msg.address.chatId,
+      lastSentText: '',
+      lastSentAt: 0,
+      degraded: false,
+      throttleTimer: null,
+      pendingText: '',
+    };
+  }
+
+  const streamCfg = previewState ? getStreamConfig(adapter.channelType) : null;
+
+  const onPartialText = (previewState && streamCfg) ? (fullText: string) => {
+    const ps = previewState!;
+    const cfg = streamCfg!;
+    if (ps.degraded) return;
+    taskStore?.updateTask(task?.id || '', { last_partial_text: fullText });
+
+    ps.pendingText = fullText.length > cfg.maxChars
+      ? fullText.slice(0, cfg.maxChars) + '...'
+      : fullText;
+
+    const delta = ps.pendingText.length - ps.lastSentText.length;
+    const elapsed = Date.now() - ps.lastSentAt;
+
+    if (delta < cfg.minDeltaChars && ps.lastSentAt > 0) {
+      if (!ps.throttleTimer) {
+        ps.throttleTimer = setTimeout(() => {
+          ps.throttleTimer = null;
+          if (!ps.degraded) flushPreview(adapter, ps, cfg);
+        }, cfg.intervalMs);
+      }
+      return;
+    }
+
+    if (elapsed < cfg.intervalMs && ps.lastSentAt > 0) {
+      if (!ps.throttleTimer) {
+        ps.throttleTimer = setTimeout(() => {
+          ps.throttleTimer = null;
+          if (!ps.degraded) flushPreview(adapter, ps, cfg);
+        }, cfg.intervalMs - elapsed);
+      }
+      return;
+    }
+
+    if (ps.throttleTimer) {
+      clearTimeout(ps.throttleTimer);
+      ps.throttleTimer = null;
+    }
+    flushPreview(adapter, ps, cfg);
+  } : undefined;
+
+  const createDiagnosticSnapshot = (reason: string, extra?: Record<string, unknown>) => {
+    const session = store.getSession(binding.codepilotSessionId);
+    const sessionMeta = taskStore?.getSessionMeta?.(binding.codepilotSessionId) || null;
+    const { messages } = store.getMessages(binding.codepilotSessionId, { limit: 6 });
+    const filePath = writeTaskDiagnosticSnapshot({
+      reason,
+      sessionId: binding.codepilotSessionId,
+      channelType: adapter.channelType,
+      chatId: msg.address.chatId,
+      messageId: msg.messageId,
+      textPreview: input.rawText,
+      binding: {
+        id: binding.id,
+        sdkSessionId: binding.sdkSessionId,
+        workingDirectory: binding.workingDirectory,
+        model: binding.model,
+        mode: binding.mode,
+      },
+      session: session ? {
+        providerId: session.provider_id,
+        workingDirectory: session.working_directory,
+        model: session.model,
+      } : null,
+      sessionMeta: sessionMeta as never,
+      recentMessages: messages,
+      extra,
+    });
+    if (filePath) {
+      console.error(`[bridge-manager] Diagnostic snapshot written: ${filePath}`);
+      taskStore?.updateTask(task?.id || '', { diagnostic_path: filePath });
+    }
+    return filePath;
+  };
+
+  let uiEnded = false;
+  const endInFlightUi = () => {
+    if (uiEnded) return;
+    uiEnded = true;
+    if (previewState) {
+      if (previewState.throttleTimer) {
+        clearTimeout(previewState.throttleTimer);
+        previewState.throttleTimer = null;
+      }
+      adapter.endPreview?.(msg.address.chatId, previewState.draftId);
+    }
+    adapter.onMessageEnd?.(msg.address.chatId);
+  };
+
+  let watchdogTriggered = false;
+  const watchdogMs = getTaskWatchdogMs();
+  const watchdogTimer = setTimeout(() => {
+    watchdogTriggered = true;
+    const snapshotPath = createDiagnosticSnapshot('watchdog_timeout', {
+      watchdogMs,
+      previewActive: !!previewState,
+      activeTaskKnown: state.activeTasks.has(binding.codepilotSessionId),
+      taskId: task?.id,
+    });
+    console.error(
+      `[bridge-manager] Task watchdog fired for session ${binding.codepilotSessionId.slice(0, 8)} after ${Math.round(watchdogMs / 1000)}s`,
+    );
+    store.insertAuditLog({
+      channelType: adapter.channelType,
+      chatId: msg.address.chatId,
+      direction: 'inbound',
+      messageId: msg.messageId,
+      summary: `[WATCHDOG] Task aborted after ${Math.round(watchdogMs / 1000)}s${snapshotPath ? ` (${snapshotPath})` : ''}`,
+    });
+    store.setSessionRuntimeStatus(binding.codepilotSessionId, 'timed_out');
+    taskStore?.updateTask(task?.id || '', {
+      status: 'timed_out',
+      last_error: `Task watchdog fired after ${Math.round(watchdogMs / 1000)}s`,
+      diagnostic_path: snapshotPath || undefined,
+    });
+    state.activeTasks.delete(binding.codepilotSessionId);
+    taskAbort.abort();
+    endInFlightUi();
+  }, watchdogMs);
+  watchdogTimer.unref?.();
+
+  try {
+    const result = await engine.processMessage(binding, input.promptText, async (perm) => {
+      taskStore?.updateTask(task?.id || '', {
+        status: 'waiting_permission',
+        permission_request_id: perm.permissionRequestId,
+        permission_tool_name: perm.toolName,
+      });
+      await broker.forwardPermissionRequest(
+        adapter,
+        msg.address,
+        perm.permissionRequestId,
+        perm.toolName,
+        perm.toolInput,
+        binding.codepilotSessionId,
+        perm.suggestions,
+      );
+    }, taskAbort.signal, msg.attachments && msg.attachments.length > 0 ? msg.attachments : undefined, onPartialText);
+
+    if (result.responseText) {
+      await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+      if (wantsVoiceReply(input.rawText)) {
+        const voiceReply = await prepareVoiceReply(result.responseText);
+        console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);
+        if (voiceReply.status === 'needs_config' || voiceReply.status === 'error') {
+          await deliver(adapter, {
+            address: msg.address,
+            text: voiceReply.noteText,
+            parseMode: 'plain',
+          }, { sessionId: binding.codepilotSessionId });
+        } else if (voiceReply.status === 'ready') {
+          const voiceAdapter = adapter as VoiceReplyCapableAdapter;
+          if (voiceAdapter.sendFileAttachment) {
+            const audioSend = await voiceAdapter.sendFileAttachment(msg.address.chatId, voiceReply.attachment);
+            console.log('[bridge-manager] Voice reply attachment send result:', audioSend.ok ? 'ok' : (audioSend.error || 'error'));
+            if (!audioSend.ok && audioSend.error) {
+              await deliver(adapter, {
+                address: msg.address,
+                text: `语音回复生成成功，但发送失败：${audioSend.error}`,
+                parseMode: 'plain',
+              }, { sessionId: binding.codepilotSessionId });
+            }
+          } else {
+            await deliver(adapter, {
+              address: msg.address,
+              text: '当前频道暂不支持桥接层语音附件回传。请继续使用文字回复，或改在支持附件发送的频道中使用。',
+              parseMode: 'plain',
+            }, { sessionId: binding.codepilotSessionId });
+          }
+        }
+      }
+    } else if (result.hasError) {
+      const errorResponse: OutboundMessage = {
+        address: msg.address,
+        text: `<b>Error:</b> ${escapeHtml(result.errorMessage)}`,
+        parseMode: 'HTML',
+      };
+      await deliver(adapter, errorResponse);
+    }
+
+    if (binding.id) {
+      try {
+        if (result.sdkSessionId) {
+          store.updateChannelBinding(binding.id, { sdkSessionId: result.sdkSessionId });
+        } else if (result.hasError && binding.sdkSessionId) {
+          store.updateChannelBinding(binding.id, { sdkSessionId: '' });
+        }
+      } catch { /* best effort */ }
+    }
+
+    if (result.hasError) {
+      taskStore?.updateTask(task?.id || '', {
+        status: 'failed',
+        last_error: result.errorMessage,
+        sdk_session_id_at_end: result.sdkSessionId || binding.sdkSessionId,
+        final_response_preview: result.responseText ? compactTaskText(result.responseText, 500) : undefined,
+      });
+    } else {
+      taskStore?.updateTask(task?.id || '', {
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        sdk_session_id_at_end: result.sdkSessionId || binding.sdkSessionId,
+        final_response_preview: result.responseText ? compactTaskText(result.responseText, 500) : undefined,
+      });
+      if (input.resumedFromTaskId) {
+        taskStore?.updateTask(input.resumedFromTaskId, { status: 'resumed' });
+      }
+    }
+  } catch (err) {
+    const snapshotPath = createDiagnosticSnapshot('task_exception', {
+      error: err instanceof Error ? err.message : String(err),
+      watchdogTriggered,
+      aborted: taskAbort.signal.aborted,
+      taskId: task?.id,
+    });
+    const status: TaskStatus = watchdogTriggered
+      ? 'timed_out'
+      : taskAbort.signal.aborted
+        ? 'aborted'
+        : 'interrupted';
+    taskStore?.updateTask(task?.id || '', {
+      status,
+      last_error: err instanceof Error ? err.message : String(err),
+      diagnostic_path: snapshotPath || undefined,
+    });
+    store.insertAuditLog({
+      channelType: adapter.channelType,
+      chatId: msg.address.chatId,
+      direction: 'inbound',
+      messageId: msg.messageId,
+      summary: `[TASK_ERROR] ${err instanceof Error ? err.message : String(err)}${snapshotPath ? ` (${snapshotPath})` : ''}`,
+    });
+    throw err;
+  } finally {
+    clearTimeout(watchdogTimer);
+    state.activeTasks.delete(binding.codepilotSessionId);
+    if (!watchdogTriggered) {
+      endInFlightUi();
+    }
+  }
+}
+
 /**
  * Handle a single inbound message.
  */
@@ -476,164 +906,17 @@ async function handleMessage(
 
   // Regular message — route to conversation engine
   const binding = router.resolve(msg.address);
-
-  // Notify adapter that message processing is starting (e.g., typing indicator)
-  adapter.onMessageStart?.(msg.address.chatId);
-
-  // Create an AbortController so /stop can cancel this task externally
-  const taskAbort = new AbortController();
-  const state = getState();
-  state.activeTasks.set(binding.codepilotSessionId, taskAbort);
-
-  // ── Streaming preview setup ──────────────────────────────────
-  let previewState: StreamingPreviewState | null = null;
-  const caps = adapter.getPreviewCapabilities?.(msg.address.chatId) ?? null;
-  if (caps?.supported) {
-    previewState = {
-      draftId: generateDraftId(),
-      chatId: msg.address.chatId,
-      lastSentText: '',
-      lastSentAt: 0,
-      degraded: false,
-      throttleTimer: null,
-      pendingText: '',
-    };
-  }
-
-  const streamCfg = previewState ? getStreamConfig(adapter.channelType) : null;
-
-  // Build the onPartialText callback (or undefined if preview not supported)
-  const onPartialText = (previewState && streamCfg) ? (fullText: string) => {
-    const ps = previewState!;
-    const cfg = streamCfg!;
-    if (ps.degraded) return;
-
-    // Truncate to maxChars + ellipsis
-    ps.pendingText = fullText.length > cfg.maxChars
-      ? fullText.slice(0, cfg.maxChars) + '...'
-      : fullText;
-
-    const delta = ps.pendingText.length - ps.lastSentText.length;
-    const elapsed = Date.now() - ps.lastSentAt;
-
-    if (delta < cfg.minDeltaChars && ps.lastSentAt > 0) {
-      // Not enough new content — schedule trailing-edge timer if not already set
-      if (!ps.throttleTimer) {
-        ps.throttleTimer = setTimeout(() => {
-          ps.throttleTimer = null;
-          if (!ps.degraded) flushPreview(adapter, ps, cfg);
-        }, cfg.intervalMs);
-      }
-      return;
-    }
-
-    if (elapsed < cfg.intervalMs && ps.lastSentAt > 0) {
-      // Too soon — schedule trailing-edge timer to ensure latest text is sent
-      if (!ps.throttleTimer) {
-        ps.throttleTimer = setTimeout(() => {
-          ps.throttleTimer = null;
-          if (!ps.degraded) flushPreview(adapter, ps, cfg);
-        }, cfg.intervalMs - elapsed);
-      }
-      return;
-    }
-
-    // Clear any pending trailing-edge timer and flush immediately
-    if (ps.throttleTimer) {
-      clearTimeout(ps.throttleTimer);
-      ps.throttleTimer = null;
-    }
-    flushPreview(adapter, ps, cfg);
-  } : undefined;
+  const senderTag = msg.address.userId ? `[sender: ${msg.address.userId}]` : '';
+  const baseText = text || (hasAttachments ? 'Describe this image.' : '');
+  const promptText = senderTag ? `${senderTag}\n${baseText}` : baseText;
 
   try {
-    // Pass permission callback so requests are forwarded to IM immediately
-    // during streaming (the stream blocks until permission is resolved).
-    // Use text or empty string for image-only messages (prompt is still required by streamClaude)
-    const senderTag = msg.address.userId ? `[sender: ${msg.address.userId}]` : '';
-    const baseText = text || (hasAttachments ? 'Describe this image.' : '');
-    const promptText = senderTag ? `${senderTag}\n${baseText}` : baseText;
-
-    const result = await engine.processMessage(binding, promptText, async (perm) => {
-      await broker.forwardPermissionRequest(
-        adapter,
-        msg.address,
-        perm.permissionRequestId,
-        perm.toolName,
-        perm.toolInput,
-        binding.codepilotSessionId,
-        perm.suggestions,
-      );
-    }, taskAbort.signal, hasAttachments ? msg.attachments : undefined, onPartialText);
-
-    // Send response text — render via channel-appropriate format
-    if (result.responseText) {
-      await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
-      if (voiceReplyRequested) {
-        const voiceReply = await prepareVoiceReply(result.responseText);
-        console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);
-        if (voiceReply.status === 'needs_config' || voiceReply.status === 'error') {
-          await deliver(adapter, {
-            address: msg.address,
-            text: voiceReply.noteText,
-            parseMode: 'plain',
-          }, { sessionId: binding.codepilotSessionId });
-        } else if (voiceReply.status === 'ready') {
-          const voiceAdapter = adapter as VoiceReplyCapableAdapter;
-          if (voiceAdapter.sendFileAttachment) {
-            const audioSend = await voiceAdapter.sendFileAttachment(msg.address.chatId, voiceReply.attachment);
-            console.log('[bridge-manager] Voice reply attachment send result:', audioSend.ok ? 'ok' : (audioSend.error || 'error'));
-            if (!audioSend.ok && audioSend.error) {
-              await deliver(adapter, {
-                address: msg.address,
-                text: `语音回复生成成功，但发送失败：${audioSend.error}`,
-                parseMode: 'plain',
-              }, { sessionId: binding.codepilotSessionId });
-            }
-          } else {
-            await deliver(adapter, {
-              address: msg.address,
-              text: '当前频道暂不支持桥接层语音附件回传。请继续使用文字回复，或改在支持附件发送的频道中使用。',
-              parseMode: 'plain',
-            }, { sessionId: binding.codepilotSessionId });
-          }
-        }
-      }
-    } else if (result.hasError) {
-      const errorResponse: OutboundMessage = {
-        address: msg.address,
-        text: `<b>Error:</b> ${escapeHtml(result.errorMessage)}`,
-        parseMode: 'HTML',
-      };
-      await deliver(adapter, errorResponse);
-    }
-
-    // Persist the actual SDK session ID for future resume.
-    // If the result has an error and no session ID was captured, clear the
-    // stale ID so the next message starts fresh instead of retrying a broken resume.
-    if (binding.id) {
-      try {
-        if (result.sdkSessionId) {
-          store.updateChannelBinding(binding.id, { sdkSessionId: result.sdkSessionId });
-        } else if (result.hasError && binding.sdkSessionId) {
-          store.updateChannelBinding(binding.id, { sdkSessionId: '' });
-        }
-      } catch { /* best effort */ }
-    }
+    await executeBoundTask(adapter, msg, binding, {
+      rawText,
+      promptText,
+      taskPromptText: text || rawText,
+    });
   } finally {
-    // Clean up preview state
-    if (previewState) {
-      if (previewState.throttleTimer) {
-        clearTimeout(previewState.throttleTimer);
-        previewState.throttleTimer = null;
-      }
-      adapter.endPreview?.(msg.address.chatId, previewState.draftId);
-    }
-
-    state.activeTasks.delete(binding.codepilotSessionId);
-    // Notify adapter that message processing ended
-    adapter.onMessageEnd?.(msg.address.chatId);
-    // Commit the offset only after full processing (success or failure)
     ack();
   }
 }
@@ -696,6 +979,8 @@ async function handleCommand(
         '/cwd /path - Change working directory',
         '/mode plan|code|ask - Change mode',
         '/status - Show current status',
+        '/tasks - List recent bridge tasks',
+        '/resume_last - Resume the latest interrupted task',
         '/sessions - List recent sessions',
         '/lsessions [--all] - List bridge sessions',
         '/switchto &lt;session_id|name&gt; - Switch current chat to a session',
@@ -770,6 +1055,11 @@ async function handleCommand(
 
     case '/status': {
       const binding = router.resolve(msg.address);
+      const currentRecord = 'listSessionRecords' in store
+        ? (store as { listSessionRecords: () => Array<{ session: { id: string }; meta: { runtime_status?: string } }> })
+          .listSessionRecords()
+          .find((record) => record.session.id === binding.codepilotSessionId)
+        : null;
       response = [
         '<b>Bridge Status</b>',
         '',
@@ -777,8 +1067,88 @@ async function handleCommand(
         `CWD: <code>${escapeHtml(binding.workingDirectory || '~')}</code>`,
         `Mode: <b>${binding.mode}</b>`,
         `Model: <code>${binding.model || 'default'}</code>`,
+        `Runtime: <b>${escapeHtml(currentRecord?.meta.runtime_status || 'idle')}</b>`,
       ].join('\n');
       break;
+    }
+
+    case '/tasks': {
+      const taskStore = asTaskStore(store);
+      if (!taskStore) {
+        response = 'Task persistence is not available in the current store.';
+        break;
+      }
+      response = formatTaskList(taskStore.listTasks({
+        channelType: adapter.channelType,
+        chatId: msg.address.chatId,
+        limit: 5,
+      }));
+      break;
+    }
+
+    case '/resume_last': {
+      const taskStore = asTaskStore(store);
+      const binding = router.resolve(msg.address);
+      const task = taskStore?.getLatestResumableTask(adapter.channelType, msg.address.chatId) ?? null;
+
+      if (task) {
+        const syntheticMessage: InboundMessage = {
+          ...msg,
+          messageId: `resume:${task.id}:${Date.now()}`,
+          text: task.prompt_text,
+          timestamp: Date.now(),
+          callbackData: undefined,
+          callbackMessageId: undefined,
+        };
+
+        await deliver(adapter, {
+          address: msg.address,
+          text: `Resuming task <code>${escapeHtml(task.id.slice(0, 8))}...</code>.`,
+          parseMode: 'HTML',
+        });
+
+        await executeBoundTask(adapter, syntheticMessage, binding, {
+          rawText: task.prompt_text,
+          promptText: buildResumePrompt(task),
+          taskPromptText: task.prompt_text,
+          resumedFromTaskId: task.id,
+        });
+        return;
+      }
+
+      const sessionMessages = store.getMessages(binding.codepilotSessionId, { limit: 20 }).messages as Array<{ role?: string; content?: string }>;
+      const fallbackPrompt = getLatestUserPromptFromMessages(sessionMessages);
+      if (!fallbackPrompt) {
+        response = 'No interrupted task is available to resume.';
+        break;
+      }
+
+      const syntheticMessage: InboundMessage = {
+        ...msg,
+        messageId: `resume-history:${binding.codepilotSessionId}:${Date.now()}`,
+        text: fallbackPrompt,
+        timestamp: Date.now(),
+        callbackData: undefined,
+        callbackMessageId: undefined,
+      };
+
+      await deliver(adapter, {
+        address: msg.address,
+        text: 'No persisted interrupted task was found. Resuming from the latest user request in this session history.',
+        parseMode: 'plain',
+      });
+
+      await executeBoundTask(adapter, syntheticMessage, binding, {
+        rawText: fallbackPrompt,
+        promptText: [
+          'Continue the latest user request from this session history.',
+          'Treat this as a recovery run after the previous attempt did not complete.',
+          `Original user request: ${fallbackPrompt}`,
+          'Inspect the workspace and prior conversation state before repeating any actions.',
+        ].join('\n'),
+        taskPromptText: fallbackPrompt,
+      });
+      return;
     }
 
     case '/sessions': {
@@ -801,6 +1171,7 @@ async function handleCommand(
       const st = getState();
       const taskAbort = st.activeTasks.get(binding.codepilotSessionId);
       if (taskAbort) {
+        store.setSessionRuntimeStatus(binding.codepilotSessionId, 'stopping');
         taskAbort.abort();
         st.activeTasks.delete(binding.codepilotSessionId);
         response = 'Stopping current task...';
@@ -839,6 +1210,8 @@ async function handleCommand(
         '/cwd /path - Change working directory',
         '/mode plan|code|ask - Change mode',
         '/status - Show current status',
+        '/tasks - List recent bridge tasks',
+        '/resume_last - Resume the latest interrupted task',
         '/sessions - List recent sessions',
         '/lsessions [--all] - List bridge sessions',
         '/switchto &lt;session_id|name&gt; - Switch current chat to a session',

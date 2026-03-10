@@ -91,7 +91,21 @@ function sessionSummary(store: BridgeStore, record: SessionRecord): string {
 }
 
 function statusLabel(record: SessionRecord): string {
-  return record.meta.archived ? '已归档' : '活跃';
+  if (record.meta.archived) return '已归档';
+  switch ((record.meta.runtime_status || '').toLowerCase()) {
+    case 'running':
+      return '运行中';
+    case 'timed_out':
+      return '超时中断';
+    case 'stopping':
+      return '停止中';
+    case 'error':
+      return '异常';
+    case 'idle':
+      return '空闲';
+    default:
+      return '活跃';
+  }
 }
 
 function sessionChannel(record: SessionRecord): string {
