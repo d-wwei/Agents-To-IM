@@ -48,12 +48,68 @@ export interface Config {
 export const HOST_PROFILE = getHostProfile(import.meta.url);
 export const CTI_HOME = process.env.CTI_HOME || HOST_PROFILE.runtimeHomePath;
 export const CONFIG_PATH = path.join(CTI_HOME, "config.env");
+const LOCAL_SECRETS_INCLUDE_COMMENT =
+  "# Load locally rotated secrets from a separate file so they do not need to live\n"
+  + "# in the main bridge config.\n";
+const LOCAL_SECRETS_INCLUDE_LINE =
+  '[ -f "$HOME/.codex-to-im/openai.local.env" ] && source "$HOME/.codex-to-im/openai.local.env"';
 
-function parseEnvFile(content: string): Map<string, string> {
+function parseQuotedPath(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed.split(/\s+/, 1)[0];
+}
+
+function extractIncludedEnvPath(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return undefined;
+
+  const guardMatch = trimmed.match(/^\[\s+-f\s+(.+?)\s*\]\s*&&\s*(?:source|\.)\s+(.+)$/);
+  if (guardMatch) {
+    const guardPath = parseQuotedPath(guardMatch[1]);
+    const sourcePath = parseQuotedPath(guardMatch[2]);
+    return sourcePath || guardPath;
+  }
+
+  const sourceMatch = trimmed.match(/^(?:source|\.)\s+(.+)$/);
+  if (!sourceMatch) return undefined;
+  return parseQuotedPath(sourceMatch[1]);
+}
+
+function loadEnvFile(filePath: string, seen = new Set<string>()): Map<string, string> {
   const entries = new Map<string, string>();
+  const resolvedPath = path.resolve(expandShellVars(filePath));
+  if (seen.has(resolvedPath)) return entries;
+  seen.add(resolvedPath);
+
+  let content: string;
+  try {
+    content = fs.readFileSync(resolvedPath, "utf-8");
+  } catch {
+    return entries;
+  }
+
+  const baseDir = path.dirname(resolvedPath);
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+    const includePath = extractIncludedEnvPath(trimmed);
+    if (includePath) {
+      const resolvedInclude = path.isAbsolute(includePath)
+        ? expandShellVars(includePath)
+        : path.resolve(baseDir, expandShellVars(includePath));
+      const includedEntries = loadEnvFile(resolvedInclude, seen);
+      for (const [key, value] of includedEntries) {
+        entries.set(key, value);
+      }
+      continue;
+    }
     const eqIdx = trimmed.indexOf("=");
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
@@ -91,13 +147,7 @@ function splitCsv(value: string | undefined): string[] | undefined {
 }
 
 export function loadConfig(): Config {
-  let env = new Map<string, string>();
-  try {
-    const content = fs.readFileSync(CONFIG_PATH, "utf-8");
-    env = parseEnvFile(content);
-  } catch {
-    // Config file doesn't exist yet — use defaults
-  }
+  const env = loadEnvFile(CONFIG_PATH);
 
   const hostDefaultRuntime =
     HOST_PROFILE.host === "codex" ? "codex"
@@ -219,6 +269,9 @@ export function saveConfig(config: Config): void {
     out += formatEnvLine("CTI_QQ_IMAGE_ENABLED", String(config.qqImageEnabled));
   if (config.qqMaxImageSize !== undefined)
     out += formatEnvLine("CTI_QQ_MAX_IMAGE_SIZE", String(config.qqMaxImageSize));
+  out += "\n";
+  out += LOCAL_SECRETS_INCLUDE_COMMENT;
+  out += `${LOCAL_SECRETS_INCLUDE_LINE}\n`;
 
   fs.mkdirSync(CTI_HOME, { recursive: true });
   const tmpPath = CONFIG_PATH + ".tmp";

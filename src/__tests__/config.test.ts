@@ -241,6 +241,57 @@ describe('loadConfig/saveConfig round-trip', () => {
     assert.equal(loaded.codexSandboxMode, 'danger-full-access');
     assert.equal(loaded.codexApprovalPolicy, 'never');
   });
+
+  it('loads secrets from an included local env file', async () => {
+    process.env.CTI_HOME = tmpDir;
+    process.env.HOME = tmpDir;
+    fs.mkdirSync(path.join(tmpDir, '.codex-to-im'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.env'),
+      [
+        'CTI_RUNTIME=codex',
+        'CTI_ENABLED_CHANNELS=feishu',
+        'CTI_DEFAULT_WORKDIR=/tmp/project',
+        'CTI_DEFAULT_MODE=code',
+        '[ -f "$HOME/.codex-to-im/openai.local.env" ] && source "$HOME/.codex-to-im/openai.local.env"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.codex-to-im', 'openai.local.env'),
+      [
+        'CTI_OPENAI_API_KEY=from-local-openai',
+        'CTI_ELEVENLABS_API_KEY=from-local-elevenlabs',
+        'CTI_ELEVENLABS_VOICE_ID=voice-from-local',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    const mod = await import(`../config.js?include=${Date.now()}`);
+    const loaded = mod.loadConfig();
+
+    assert.equal(loaded.openaiApiKey, 'from-local-openai');
+    assert.equal(loaded.elevenLabsApiKey, 'from-local-elevenlabs');
+    assert.equal(loaded.elevenLabsVoiceId, 'voice-from-local');
+  });
+
+  it('keeps the local env include stanza when saving config', async () => {
+    process.env.CTI_HOME = tmpDir;
+    const mod = await import(`../config.js?save-include=${Date.now()}`);
+
+    mod.saveConfig({
+      runtime: 'codex',
+      enabledChannels: ['feishu'],
+      defaultWorkDir: '/tmp/project',
+      defaultMode: 'code',
+    });
+
+    const saved = fs.readFileSync(path.join(tmpDir, 'config.env'), 'utf8');
+    assert.match(saved, /source "\$HOME\/\.codex-to-im\/openai\.local\.env"/);
+    assert.match(saved, /Load locally rotated secrets/);
+  });
 });
 
 describe('expandShellVars', () => {
