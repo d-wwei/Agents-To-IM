@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -224,7 +225,40 @@ export class CodexProvider implements LLMProvider {
   constructor(
     private pendingPerms: PendingPermissions,
     private skipGitRepoCheck = true,
+    private autoApprove = false,
   ) {}
+
+  private async requestTurnApproval(
+    controller: ReadableStreamDefaultController<string>,
+    params: StreamChatParams,
+    approvalPolicy: string,
+  ): Promise<void> {
+    if (this.autoApprove || approvalPolicy !== 'on-request') {
+      return;
+    }
+
+    const permissionRequestId = `codex-turn-${crypto.randomUUID()}`;
+    const toolInput = {
+      workingDirectory: params.workingDirectory || getStablePwd(),
+      mode: params.permissionMode || 'acceptEdits',
+      approvalPolicy,
+      promptPreview: params.prompt.slice(0, 280),
+    };
+
+    controller.enqueue(
+      sseEvent('permission_request', {
+        permissionRequestId,
+        toolName: 'codex_turn',
+        toolInput,
+        suggestions: [],
+      }),
+    );
+
+    const resolution = await this.pendingPerms.waitFor(permissionRequestId);
+    if (resolution.behavior !== 'allow') {
+      throw new Error(resolution.message || 'Codex turn denied by user before execution');
+    }
+  }
 
   /**
    * Lazily load the Codex SDK. Throws a clear error if not installed.
@@ -347,14 +381,17 @@ export class CodexProvider implements LLMProvider {
             const approvalPolicyOverride = getApprovalPolicyOverride();
             const sandboxModeOverride = getSandboxModeOverride();
             const passModel = shouldPassModelToCodex();
+            const effectiveApprovalPolicy = approvalPolicyOverride || approvalPolicy;
 
             const threadOptions: Record<string, unknown> = {
               ...(passModel && params.model ? { model: params.model } : {}),
               ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
               skipGitRepoCheck: self.skipGitRepoCheck,
-              approvalPolicy: approvalPolicyOverride || approvalPolicy,
+              approvalPolicy: effectiveApprovalPolicy,
               ...(sandboxModeOverride ? { sandboxMode: sandboxModeOverride } : {}),
             };
+
+            await self.requestTurnApproval(controller, params, effectiveApprovalPolicy);
 
             // Codex SDK supports text and local images only. For non-image
             // attachments, persist them locally and reference their paths in

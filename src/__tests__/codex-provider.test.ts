@@ -1,6 +1,8 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+
+process.env.CTI_CODEX_APPROVAL_POLICY ??= 'never';
 
 // ── SSE utils tests ─────────────────────────────────────────
 
@@ -48,6 +50,20 @@ function parseSSEChunks(chunks: string[]): Array<{ type: string; data: string }>
 }
 
 describe('CodexProvider', () => {
+  const originalApprovalPolicy = process.env.CTI_CODEX_APPROVAL_POLICY;
+
+  before(() => {
+    process.env.CTI_CODEX_APPROVAL_POLICY = 'never';
+  });
+
+  after(() => {
+    if (originalApprovalPolicy === undefined) {
+      delete process.env.CTI_CODEX_APPROVAL_POLICY;
+    } else {
+      process.env.CTI_CODEX_APPROVAL_POLICY = originalApprovalPolicy;
+    }
+  });
+
   it('passes proactive attachment policy for non-image files', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
@@ -491,6 +507,108 @@ describe('CodexProvider', () => {
     }
   });
 
+  it('emits a synthetic permission request before running Codex when approval is on-request', async () => {
+    const oldApproval = process.env.CTI_CODEX_APPROVAL_POLICY;
+    process.env.CTI_CODEX_APPROVAL_POLICY = 'on-request';
+
+    try {
+      const { CodexProvider } = await import('../codex-provider.js');
+      const { PendingPermissions } = await import('../permission-gateway.js');
+      const pendingPerms = new PendingPermissions();
+      const provider = new CodexProvider(pendingPerms);
+
+      let startCalls = 0;
+      let seenPermissionId = '';
+      (pendingPerms as any).waitFor = async (permissionRequestId: string) => {
+        seenPermissionId = permissionRequestId;
+        return { behavior: 'allow' };
+      };
+
+      const mockThread = {
+        runStreamed: () => ({
+          events: (async function* () {
+            yield { type: 'thread.started', thread_id: 'thread-approval' };
+            yield { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 } };
+          })(),
+        }),
+      };
+      (provider as any).ensureSDK = async () => ({
+        sdk: {},
+        codex: {
+          startThread: () => {
+            startCalls += 1;
+            return mockThread;
+          },
+        },
+      });
+
+      const chunks = await collectStream(provider.streamChat({
+        prompt: 'create a file',
+        sessionId: 'permission-session',
+      }));
+      const events = parseSSEChunks(chunks);
+      const permissionEvent = events.find((event) => event.type === 'permission_request');
+
+      assert.ok(permissionEvent, 'Should emit a permission request event');
+      assert.ok(seenPermissionId.startsWith('codex-turn-'));
+      assert.equal(startCalls, 1);
+      const permissionData = JSON.parse(permissionEvent!.data);
+      assert.equal(permissionData.toolName, 'codex_turn');
+      assert.equal(permissionData.permissionRequestId, seenPermissionId);
+    } finally {
+      if (oldApproval === undefined) {
+        delete process.env.CTI_CODEX_APPROVAL_POLICY;
+      } else {
+        process.env.CTI_CODEX_APPROVAL_POLICY = oldApproval;
+      }
+    }
+  });
+
+  it('stops before execution when the synthetic Codex permission request is denied', async () => {
+    const oldApproval = process.env.CTI_CODEX_APPROVAL_POLICY;
+    process.env.CTI_CODEX_APPROVAL_POLICY = 'on-request';
+
+    try {
+      const { CodexProvider } = await import('../codex-provider.js');
+      const { PendingPermissions } = await import('../permission-gateway.js');
+      const pendingPerms = new PendingPermissions();
+      const provider = new CodexProvider(pendingPerms);
+
+      let startCalls = 0;
+      (pendingPerms as any).waitFor = async () => ({
+        behavior: 'deny',
+        message: 'Denied by IM test',
+      });
+
+      (provider as any).ensureSDK = async () => ({
+        sdk: {},
+        codex: {
+          startThread: () => {
+            startCalls += 1;
+            throw new Error('startThread should not be called when permission is denied');
+          },
+        },
+      });
+
+      const chunks = await collectStream(provider.streamChat({
+        prompt: 'delete a file',
+        sessionId: 'permission-denied-session',
+      }));
+      const events = parseSSEChunks(chunks);
+      const errorEvent = events.find((event) => event.type === 'error');
+
+      assert.equal(startCalls, 0);
+      assert.ok(errorEvent, 'Should emit an error when permission is denied');
+      assert.match(errorEvent!.data, /Denied by IM test/);
+    } finally {
+      if (oldApproval === undefined) {
+        delete process.env.CTI_CODEX_APPROVAL_POLICY;
+      } else {
+        process.env.CTI_CODEX_APPROVAL_POLICY = oldApproval;
+      }
+    }
+  });
+
   it('retries with fresh thread when resume fails before any events', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
@@ -641,6 +759,20 @@ function makeFile(type: string, data: string, name = 'test-file') {
 }
 
 describe('CodexProvider image input', () => {
+  const originalApprovalPolicy = process.env.CTI_CODEX_APPROVAL_POLICY;
+
+  before(() => {
+    process.env.CTI_CODEX_APPROVAL_POLICY = 'never';
+  });
+
+  after(() => {
+    if (originalApprovalPolicy === undefined) {
+      delete process.env.CTI_CODEX_APPROVAL_POLICY;
+    } else {
+      process.env.CTI_CODEX_APPROVAL_POLICY = originalApprovalPolicy;
+    }
+  });
+
   it('builds local_image input array for text+image', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');

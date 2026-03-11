@@ -1,215 +1,286 @@
-# Claude/Codex/Gemini-to-IM
+# Codex-to-IM Skill
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
-[![GitHub Stars](https://img.shields.io/github/stars/d-wwei/Claude-Codex-Gemini-to-IM?style=social)](https://github.com/d-wwei/Claude-Codex-Gemini-to-IM)
+Bridge your AI coding host to IM platforms — chat with coding agents from Telegram, Discord, or Feishu/Lark.
 
-把 AI 编程助手（Claude Code / Codex / Gemini）桥接到 IM 平台，让你在飞书、Discord、Telegram 里直接与 AI 对话、执行任务。
+[中文文档](README_CN.md)
 
-Bridge your AI coding assistant (Claude Code / Codex / Gemini) to IM platforms — chat with your AI directly in Feishu/Lark, Discord, or Telegram.
-
-[中文文档](README_CN.md) 
----
-
-## 功能特性 / Features
-
-**核心能力 / Core**
-- 在 IM 消息中直接与 Claude Code / Codex / Gemini 交互
-- 后台 daemon 管理、流式回复、多会话持久化
-- 权限审批流（可设为自动批准）
-- 统一的附件处理：图片、文件均支持，通过本地路径注入兜底
-
-**语音能力 / Voice（飞书专属）**
-- 自动转写飞书语音消息（Ogg/Opus → PCM → 飞书 STT）
-- 可选 OpenAI Whisper 作为 STT 备用
-- 可选 ElevenLabs 生成语音回复
-
-**内建会话管理 / Session Management**
-
-| 命令 | 效果 |
-|---|---|
-| `/lsessions` | 列出所有活跃会话 |
-| `/lsessions --all` | 列出全部会话（含已归档） |
-| `/switchto <id\|name>` | 切换到指定会话 |
-| `/rename <name>` | 重命名当前会话 |
-| `/archive [id\|name]` | 归档会话 |
-| `/unarchive <id\|name>` | 恢复归档会话 |
+> **Want a desktop GUI instead?** Check out [CodePilot](https://github.com/op7418/CodePilot) — a full-featured desktop app with visual chat interface, session management, file tree preview, permission controls, and more. This skill was extracted from CodePilot's IM bridge module for users who prefer a lightweight, CLI-only setup.
 
 ---
 
-## 支持平台 / Supported Platforms
+## How It Works
 
-| IM 平台 | 状态 |
-|---|---|
-| Discord | 支持 |
-| 飞书 / Feishu / Lark | 支持（含语音、附件） |
-| Telegram | 支持 |
-| QQ | 支持 |
+This skill runs a background daemon that connects your IM bots to the currently installed host agent. Messages from IM are forwarded to the coding agent, and responses (including tool use, permission requests, streaming previews) are sent back to your chat.
 
-## 支持的 Runtime
+```
+You (Telegram/Discord/Feishu)
+  ↕ Bot API
+Background Daemon (Node.js)
+  ↕ Host SDK or CLI bridge (configurable via CTI_RUNTIME)
+Installed host agent → reads/writes your codebase
+```
 
-| Runtime | 说明 | 对应 Skill |
+## Features
+
+- **Three IM platforms** — Telegram, Discord, Feishu/Lark, enable any combination
+- **Interactive setup** — guided wizard collects tokens with step-by-step instructions
+- **Permission control** — Claude supports tool-level inline approvals; Codex supports pre-turn approval in IM when `approval_policy=on-request`
+- **Streaming preview** — see Claude's response as it types (Telegram & Discord)
+- **Session persistence** — conversations survive daemon restarts
+- **Secret protection** — tokens stored with `chmod 600`, auto-redacted in all logs
+- **Multi-host installs** — install isolated variants following the pattern `<host>-to-im` with matching runtime homes
+- **Zero code required** — install the skill and run the setup command for your host variant, that's it
+
+## Prerequisites
+
+- **Node.js >= 20**
+- **Codex CLI** — installed and authenticated (`codex` command available; login via `codex login`)
+- **Optional Claude CLI** (only if you plan to use `CTI_RUNTIME=claude` or `auto`)
+
+## Installation
+
+### npx skills (recommended)
+
+```bash
+npx skills add op7418/Claude-to-IM-skill
+```
+
+### Git clone
+
+```bash
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
+```
+
+Clones the repo directly into the selected host skills directory.
+
+### Symlink
+
+If you prefer to keep the repo elsewhere (e.g., for development):
+
+```bash
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
+mkdir -p ~/.codex/skills
+ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
+```
+
+### Codex
+
+If you use Codex, clone directly into the Codex skills directory:
+
+```bash
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
+```
+
+Or use the provided install script for automatic dependency installation and build:
+
+```bash
+# Clone and install (copy mode)
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh
+
+# Or use symlink mode for development
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh --link
+```
+
+### Multi-host install
+
+Use the generic installer when you want separate installs for multiple hosts on the same machine:
+
+```bash
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host claude
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host codex
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
+```
+
+This creates isolated skill commands and runtime homes, following the pattern:
+
+```text
+<host>-to-im  -> ~/.<host>-to-im
+```
+
+### Verify installation
+
+**Codex:** Start a new session and say `codex-to-im setup` or `start bridge` — Codex will recognize the skill and use `~/.codex-to-im` for its runtime data.
+
+## Quick Start
+
+### 1. Setup
+
+```
+/codex-to-im setup
+```
+
+The wizard will guide you through:
+
+1. **Choose channels** — pick Telegram, Discord, Feishu, or any combination
+2. **Enter credentials** — the wizard explains exactly where to get each token, which settings to enable, and what permissions to grant
+3. **Set defaults** — working directory, model, and mode
+4. **Validate** — tokens are verified against platform APIs immediately
+
+### 2. Start
+
+```
+/codex-to-im start
+```
+
+The daemon starts in the background. You can close the terminal — it keeps running.
+
+### 3. Chat
+
+Open your IM app and send a message to your bot. Your installed host agent will respond.
+
+Permission behavior depends on runtime:
+
+- **Claude runtime** — tool calls can be approved inline in chat
+- **Codex runtime** — when `approval_policy=on-request`, the bridge asks for a pre-turn approval in chat before starting the Codex turn
+
+## Commands
+
+All commands are run inside your installed host:
+
+| Slash-command hosts | Natural-language hosts | Description |
 |---|---|---|
-| `claude` | Claude Code CLI（默认） | `claude-to-im` |
-| `codex` | OpenAI Codex CLI | `codex-to-im` |
-| `gemini` | Gemini CLI | `gemini-to-im` |
-| `auto` | 自动探测，优先级：gemini → claude → codex | 任意宿主 |
+| `/codex-to-im setup` | "codex-to-im setup" / "配置" | Interactive setup wizard |
+| `/codex-to-im start` | "start bridge" / "启动桥接" | Start the bridge daemon |
+| `/codex-to-im stop` | "stop bridge" / "停止桥接" | Stop the bridge daemon |
+| `/codex-to-im status` | "bridge status" / "状态" | Show daemon status |
+| `/codex-to-im logs` | "查看日志" | Show last 50 log lines |
+| `/codex-to-im logs 200` | "logs 200" | Show last 200 log lines |
+| `/codex-to-im reconfigure` | "reconfigure" / "修改配置" | Update config interactively |
+| `/codex-to-im doctor` | "doctor" / "诊断" | Diagnose issues |
 
-每个宿主独立隔离，有各自的配置目录：
+The bridge also supports built-in session management commands inside IM chats:
 
-| 宿主 | Skill 目录 | 运行时目录 |
-|---|---|---|
-| Claude | `~/.claude/skills/claude-to-im` | `~/.claude-to-im` |
-| Codex | `~/.codex/skills/codex-to-im` | `~/.codex-to-im` |
-| Gemini | `~/.gemini/skills/gemini-to-im` | `~/.gemini-to-im` |
-
----
-
-## 系统要求 / Prerequisites
-
-- **Node.js >= 20**（安装脚本会自动检测）
-- **Git**
-- 至少安装以下之一：
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-  - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-  - [Codex CLI](https://github.com/openai/codex)
-- 可选：`ffmpeg`（飞书语音转写需要）
-
----
-
-## 一键安装 / Quick Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/d-wwei/Claude-Codex-Gemini-to-IM/main/scripts/install.sh | bash
-```
-
-脚本会自动完成以下操作：
-1. 检测 Node.js 版本（需 >= 20）
-2. 克隆仓库到 `~/.claude/skills/claude-to-im`（已存在则 git pull）
-3. 安装依赖（`npm install`）
-4. 提示你运行 `claude-to-im setup` 完成配置向导
-
-安装完成后，在 Claude Code 中运行：
-```
-/claude-to-im setup
-```
-
----
-
-## 手动安装 / Manual Install
-
-克隆仓库：
-
-```bash
-git clone https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git ~/code/Claude-Codex-Gemini-to-IM
-cd ~/code/Claude-Codex-Gemini-to-IM
-npm install
-```
-
-安装对应宿主变体：
-
-```bash
-# Claude（推荐）
-bash scripts/install-host.sh --host claude
-
-# Codex
-bash scripts/install-host.sh --host codex
-
-# Gemini
-bash scripts/install-host.sh --host gemini
-```
-
-安装完成后，运行 setup 完成配置：
-
-```bash
-# Claude Code 中运行
-/claude-to-im setup
-```
-
----
-
-## 快速配置 / Quick Configuration
-
-Setup 向导会引导你填写：
-- 选择 IM 平台（Discord / 飞书 / Telegram / QQ）
-- 填入 Bot Token 和相关凭据
-- 选择 Runtime（claude / codex / gemini / auto）
-- 设置工作目录和默认模式
-
-配置保存在 `~/.claude-to-im/config.env`（权限 0600）。
-
-详细配置参考：
-- [使用说明](references/usage.md)（安装后可用）
-- [故障排查](references/troubleshooting.md)
-- [安全说明](SECURITY.md)
-
----
-
-## 常用命令 / Common Commands
-
-以下命令在 Claude Code 中执行（`/claude-to-im <subcommand>`）：
-
-| 命令 | 说明 |
+| IM command | Description |
 |---|---|
-| `setup` | 运行配置向导 |
-| `start` | 启动后台桥接 daemon |
-| `stop` | 停止 daemon |
-| `status` | 查看运行状态 |
-| `logs` | 查看最近日志 |
-| `doctor` | 诊断配置和连接问题 |
-| `help` | 查看帮助 |
+| `/lsessions` | List active bridge sessions with name, short ID, channel, status, last activity, and summary |
+| `/lsessions --all` | Include archived sessions in the list |
+| `/switchto &lt;session_id\|name&gt;` | Switch the current chat to an existing session by ID or assigned name |
+| `/rename &lt;new_name&gt;` | Rename the current session |
+| `/archive [session_id\|name]` | Archive the current or specified session and keep a short summary |
+| `/unarchive &lt;session_id\|name&gt;` | Restore an archived session |
 
----
+## Platform Setup Guides
 
-## Codex 权限档位 / Codex Permission Profiles
+The `setup` wizard provides inline guidance for every step. Here's a summary:
 
-Codex 变体支持通过 `~/.codex-to-im/config.env` 配置权限档位：
+### Telegram
 
-```bash
-# 完全开放（受信任环境）
-CTI_CODEX_SANDBOX_MODE=danger-full-access
-CTI_CODEX_APPROVAL_POLICY=never
+1. Message `@BotFather` on Telegram → `/newbot` → follow prompts
+2. Copy the bot token (format: `123456789:AABbCc...`)
+3. Recommended: `/setprivacy` → Disable (for group use)
+4. Find your User ID: message `@userinfobot`
 
-# 安全模式
-CTI_CODEX_SANDBOX_MODE=workspace-write
-CTI_CODEX_APPROVAL_POLICY=on-request
+### Discord
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) → New Application
+2. Bot tab → Reset Token → copy it
+3. Enable **Message Content Intent** under Privileged Gateway Intents
+4. OAuth2 → URL Generator → scope `bot` → permissions: Send Messages, Read Message History, View Channels → copy invite URL
+
+### Feishu / Lark
+
+1. Go to [Feishu Open Platform](https://open.feishu.cn/app) (or [Lark](https://open.larksuite.com/app))
+2. Create Custom App → get App ID and App Secret
+3. **Batch-add permissions**: go to "Permissions & Scopes" → use batch configuration to add all required scopes (the `setup` wizard provides the exact JSON)
+4. Enable Bot feature under "Add Features"
+5. **Events & Callbacks**: select **"Long Connection"** as event dispatch method → add `im.message.receive_v1` event
+6. **Publish**: go to "Version Management & Release" → create version → submit for review → approve in Admin Console
+7. **Important**: The bot will NOT work until the version is approved and published
+
+## Architecture
+
+```
+~/.<host>-to-im/
+├── config.env             ← Credentials & settings (chmod 600)
+├── data/                  ← Persistent JSON storage
+│   ├── sessions.json
+│   ├── bindings.json
+│   ├── permissions.json
+│   └── messages/          ← Per-session message history
+├── logs/
+│   └── bridge.log         ← Auto-rotated, secrets redacted
+└── runtime/
+    ├── bridge.pid          ← Daemon PID file
+    └── status.json         ← Current status
 ```
 
-快捷切换：
+### Key components
 
-```bash
-bash ~/.codex/skills/codex-to-im/scripts/permissions.sh safe
-bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
-```
-
----
-
-## 可选依赖 / Optional Dependencies
-
-| 功能 | 依赖 |
+| Component | Role |
 |---|---|
-| 飞书语音转写 | `ffmpeg` + 飞书 `speech_to_text:speech` 权限 |
-| OpenAI Whisper 备用 STT | `CTI_OPENAI_API_KEY` |
-| ElevenLabs 语音回复 | `CTI_ELEVENLABS_API_KEY` + `CTI_ELEVENLABS_VOICE_ID` |
+| `src/main.ts` | Daemon entry — assembles DI, starts bridge |
+| `src/config.ts` | Load/save `config.env`, map to bridge settings |
+| `src/store.ts` | JSON file BridgeStore (30 methods, write-through cache) |
+| `src/llm-provider.ts` | Claude Agent SDK `query()` → SSE stream |
+| `src/codex-provider.ts` | Codex SDK `runStreamed()` → SSE stream |
+| `src/sse-utils.ts` | Shared SSE formatting helper |
+| `src/permission-gateway.ts` | Async bridge permission resolution and IM approval handoff |
+| `src/logger.ts` | Secret-redacted file logging with rotation |
+| `scripts/daemon.sh` | Process management (start/stop/status/logs) |
+| `scripts/doctor.sh` | Health checks |
+| `SKILL.md` | Host skill definition |
 
----
+### Permission flow
 
-## 开发 / Development
+Claude runtime:
 
-```bash
-npm install
-npm test
-npm run build
+```
+1. The agent wants to use a tool (e.g., Edit file)
+2. SDK calls canUseTool() → LLMProvider emits permission_request SSE
+3. Bridge sends inline buttons to IM chat: [Allow] [Deny]
+4. canUseTool() blocks, waiting for user response (5 min timeout)
+5. User taps Allow → bridge resolves the pending permission
+6. SDK continues tool execution → result streamed back to IM
 ```
 
-重新渲染仓库首页：
+Codex runtime:
 
-```bash
-node scripts/render-host-templates.mjs --repo-home --target .
+```
+1. Bridge resolves Codex approval policy for the current turn
+2. If `approval_policy=on-request`, CodexProvider emits a synthetic permission_request before execution
+3. Bridge sends IM approval controls or `/perm allow|deny <id>` instructions
+4. User approves → Codex turn starts
+5. User denies or times out → Codex turn does not start
 ```
 
----
+## Troubleshooting
 
-## 许可证 / License
+Run diagnostics:
+
+```
+/codex-to-im doctor
+```
+
+This checks: Node.js version, config file existence and permissions, token validity (live API calls), log directory, PID file consistency, and recent errors.
+
+| Issue | Solution |
+|---|---|
+| `Bridge won't start` | Run `doctor`. Check if Node >= 20. Check logs. |
+| `Messages not received` | Verify token with `doctor`. Check allowed users config. |
+| `Permission timeout` | User didn't respond within 5 min. Tool call auto-denied. |
+| `Stale PID file` | Run `stop` then `start`. daemon.sh auto-cleans stale PIDs. |
+
+See [references/troubleshooting.md](references/troubleshooting.md) for more details.
+
+## Security
+
+- All credentials stored in `~/.codex-to-im/config.env` with `chmod 600`
+- Tokens are automatically redacted in all log output (pattern-based masking)
+- Allowed user/channel/guild lists restrict who can interact with the bot
+- The daemon is a local process with no inbound network listeners
+- See [SECURITY.md](SECURITY.md) for threat model and incident response
+
+## Development
+
+```bash
+npm install        # Install dependencies
+npm run dev        # Run in dev mode
+npm run typecheck  # Type check
+npm test           # Run tests
+npm run build      # Build bundle
+```
+
+## License
 
 [MIT](LICENSE)

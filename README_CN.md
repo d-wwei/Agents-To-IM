@@ -1,175 +1,286 @@
-# Claude/Codex/Gemini-to-IM
+# Codex-to-IM Skill
 
-把 AI 编程宿主桥接到 IM 平台（Telegram、Discord、飞书、QQ），并为 Claude、Codex、Gemini 以及后续宿主提供彼此隔离的安装方式。
+将当前安装的 AI 编程宿主桥接到 IM 平台 —— 在 Telegram、Discord 或飞书中与 AI 编程代理对话。
 
 [English](README.md)
 
+> **想要桌面图形界面？** 试试 [CodePilot](https://github.com/op7418/CodePilot) —— 一个功能完整的桌面应用，提供可视化聊天界面、会话管理、文件树预览、权限控制等。本 Skill 从 CodePilot 的 IM 桥接模块中提取而来，适合偏好轻量级纯 CLI 方案的用户。
+
 ---
 
-## 这个仓库提供什么
+## 工作原理
 
-- 一套共享代码库，用来生成 `claude-to-im`、`codex-to-im`、`gemini-to-im` 等宿主变体
-- 每个宿主独立的运行时目录，命名规则为 `~/.<host>-to-im`
-- Telegram、Discord、飞书 / Lark、QQ 四个平台桥接能力
-- 后台 daemon 管理、权限审批、流式回复、会话持久化等能力
-- 在 runtime 不原生支持普通文件输入时，仍能通过本地路径注入的方式保持一致的附件处理能力
+本 Skill 运行一个后台守护进程，将你的 IM 机器人连接到当前安装的宿主代理。来自 IM 的消息被转发给 AI 编程代理，响应（包括工具调用、权限请求、流式预览）会发回到聊天中。
 
-## 宿主变体
+```
+你 (Telegram/Discord/飞书)
+  ↕ Bot API
+后台守护进程 (Node.js)
+  ↕ 宿主 SDK / CLI 桥接层（通过 CTI_RUNTIME 配置）
+当前安装的宿主代理 → 读写你的代码库
+```
 
-| 宿主 | Skill 命令 | 默认 skill 目录 | 运行时目录 |
-|---|---|---|---|
-| Claude | `claude-to-im` | `~/.claude/skills/claude-to-im` | `~/.claude-to-im` |
-| Codex | `codex-to-im` | `~/.codex/skills/codex-to-im` | `~/.codex-to-im` |
-| Gemini | `gemini-to-im` | `~/.gemini/skills/gemini-to-im` | `~/.gemini-to-im` |
+## 功能特点
 
-这样你就可以在同一台机器上同时安装多个宿主版本，而不会共享运行时配置、日志或 daemon 状态。
+- **三大 IM 平台** — Telegram、Discord、飞书，可任意组合启用
+- **交互式配置** — 引导式向导逐步收集 token，附带详细获取说明
+- **权限控制** — Claude 支持逐工具内联审批；Codex 在 `approval_policy=on-request` 时支持 IM 中的单轮前置审批
+- **流式预览** — 实时查看 Claude 的输出（Telegram 和 Discord 支持）
+- **会话持久化** — 对话在守护进程重启后保留
+- **密钥保护** — token 以 `chmod 600` 存储，日志中自动脱敏
+- **多宿主隔离安装** — 可按 `<host>-to-im` 模式安装隔离变体，并使用对应运行时目录
+- **无需编写代码** — 安装 Skill 后运行当前宿主对应的 setup 命令即可
+
+## 前置要求
+
+- **Node.js >= 20**
+- **Codex CLI** — 已安装并完成认证（`codex` 命令可用；可通过 `codex login` 登录）
+- **可选的 Claude CLI**（仅当你计划使用 `CTI_RUNTIME=claude` 或 `auto` 时）
 
 ## 安装
 
-先把仓库克隆到本地，作为开发或安装源：
+### npx skills（推荐）
+
+```bash
+npx skills add op7418/Claude-to-IM-skill
+```
+
+### Git 克隆
+
+```bash
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
+```
+
+将仓库直接克隆到所选宿主的 Skills 目录。
+
+### 符号链接方式
+
+如果你想把仓库放在其他位置（比如方便开发）：
 
 ```bash
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-cd ~/code/Claude-to-IM-skill
+mkdir -p ~/.codex/skills
+ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
 ```
 
-然后按需要安装对应宿主版本：
+### Codex
+
+如果你使用 Codex，直接克隆到 Codex skills 目录：
 
 ```bash
-bash scripts/install-host.sh --host claude
-bash scripts/install-host.sh --host codex
-bash scripts/install-host.sh --host gemini
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
 ```
 
-每次安装都会把宿主专属命令、文档和运行时目录渲染到对应的 skill 目录里。
-
-## 文档入口
-
-- Claude 使用说明：安装后的 `claude-to-im` 文档
-- Codex 使用说明：安装后的 `codex-to-im` 文档
-- Gemini 使用说明：安装后的 `gemini-to-im` 文档
-- 发布说明：[RELEASE_NOTES_CN.md](RELEASE_NOTES_CN.md)
-- 故障排查参考：[references/troubleshooting.md](references/troubleshooting.md)
-- 安全说明：[SECURITY.md](SECURITY.md)
-
-## Codex 权限档位
-
-Codex 变体支持通过 `~/.codex-to-im/config.env` 配置运行时权限档位。
-
-默认示例档位：
+或使用提供的安装脚本，自动安装依赖并构建：
 
 ```bash
-CTI_CODEX_SANDBOX_MODE=danger-full-access
-CTI_CODEX_APPROVAL_POLICY=never
+# 克隆并安装（复制模式）
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh
+
+# 或使用符号链接模式（方便开发）
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh --link
 ```
 
-可选的包装命令：
+### 多宿主安装
+
+如果你希望在同一台机器上同时给多个宿主工具安装隔离版本，可以使用通用安装脚本：
 
 ```bash
-CTI_CODEX_EXECUTABLE=/Users/you/.local/bin/codex-full
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host claude
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host codex
+bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
 ```
 
-档位说明：
+这样会生成彼此隔离的命令和运行时目录，命名模式为：
 
-- `full` -> `danger-full-access` + `never`
-- `safe` -> `workspace-write` + `on-request`
-
-这只适合受信任环境。
-
-如果你不想手改配置，也可以使用已安装宿主变体里的 `scripts/permissions.sh`：
-
-```bash
-bash ~/.codex/skills/codex-to-im/scripts/permissions.sh show
-bash ~/.codex/skills/codex-to-im/scripts/permissions.sh safe
-bash ~/.codex/skills/codex-to-im/scripts/permissions.sh full
+```text
+<host>-to-im  -> ~/.<host>-to-im
 ```
 
-## 附件支持
+### 验证安装
 
-- 飞书 / Lark 的入站消息可以把图片和普通文件附件带进桥接层。
-- Gemini 原本就会把附件写入本地临时目录，并把路径传给 CLI prompt。
-- Codex 和 Claude Code 现在会把所有入站附件都落地到本地临时文件，并把绝对路径注入 prompt，作为统一兜底方案。
-- 图片附件在目标 runtime 支持的情况下仍然继续走原生多模态输入，因此支持图片理解的 runtime 会同时拿到原生图片输入和本地路径兜底。
-- 这一点对接企业内网网关或自定义 Claude 兼容模型时尤其重要：即使底层 runtime 忽略了原生图片 block，代理仍然可以通过落地后的本地文件路径读取附件。
+**Codex：** 启动新会话，说 `codex-to-im setup` 或“启动桥接”，Codex 会识别 Skill 并使用 `~/.codex-to-im` 作为运行时目录。
 
-## 语音与音频能力
+## 快速开始
 
-- 飞书入站语音消息在桥接层处理，不会只作为"不透明附件"丢给 runtime。
-- bridge 会先下载语音，必要时把 Ogg/Opus 转成 16 kHz PCM，再调用飞书 STT，然后才把文本交给 Codex、Claude 或 Gemini。
-- 如果飞书 STT 限频或不可用，并且配置了 `CTI_OPENAI_API_KEY`，bridge 可以自动回退到 OpenAI Whisper 做语音转写。
-- 当用户明确要求"语音回复"时，bridge 可以选配 ElevenLabs TTS，并把生成的音频作为 Feishu 文件附件发回去。
+### 1. 配置
 
-## 依赖与 Provider API Key
-
-必需或推荐依赖：
-
-- `ffmpeg`
-  用于飞书语音消息转码，尤其是 Ogg/Opus -> 16 kHz PCM。
-- 飞书应用权限 `speech_to_text:speech`
-  如果要启用飞书侧语音转写，这个权限必须开通。
-
-可选 Provider API key：
-
-- `CTI_OPENAI_API_KEY`
-  当飞书 STT 失败或限频时，启用 OpenAI Whisper 作为入站语音转写兜底。
-- `CTI_ELEVENLABS_API_KEY`
-  当用户明确要求语音输出时，启用 ElevenLabs 语音回复。
-- `CTI_ELEVENLABS_VOICE_ID`
-  与 ElevenLabs API key 配套必填。
-- `CTI_ELEVENLABS_MODEL_ID`
-  可选，默认 `eleven_multilingual_v2`。
-
-`~/.<host>-to-im/config.env` 里的相关配置示例：
-
-```bash
-CTI_FEISHU_AUDIO_TRANSCRIBE=true
-CTI_AUDIO_TRANSCODER=/opt/homebrew/bin/ffmpeg
-CTI_OPENAI_API_KEY=...
-CTI_ELEVENLABS_API_KEY=...
-CTI_ELEVENLABS_VOICE_ID=...
-CTI_ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+/codex-to-im setup
 ```
 
-隐私与安全建议：
+向导会引导你完成以下步骤：
 
-- 不要通过 IM 聊天发送 Provider API key，只保存在本机 `config.env`。
-- bridge 会以 `0600` 权限写入 `config.env`，但这只是基础保护，不等于完整的密钥托管方案。
-- 如果启用了 `CTI_OPENAI_API_KEY`，在 fallback 转写时音频会发送到 OpenAI 处理；只有在符合你的隐私要求时才建议开启。
-- 如果启用了 ElevenLabs 语音回复，当用户明确要求语音输出时，回复文本会发送给 ElevenLabs 生成音频。
-- 想进一步提升本地保护，建议开启 FileVault；一旦密钥泄露，立即去对应 Provider 后台轮换。
+1. **选择渠道** — 选择 Telegram、Discord、飞书，或任意组合
+2. **输入凭据** — 向导会详细说明如何获取每个 token、需要开启哪些设置、授予哪些权限
+3. **设置默认值** — 工作目录、模型、模式
+4. **验证** — 立即通过平台 API 验证 token 有效性
 
-## 内建会话管理命令
+### 2. 启动
 
-桥接现在在桥接层内建了一组会话管理命令。因为这些命令会在消息转发给底层代理之前先被处理，所以 Claude、Codex、Gemini 三个宿主变体的行为是一致的。
+```
+/codex-to-im start
+```
 
-| 命令 | 效果 |
+守护进程在后台启动。关闭终端后仍会继续运行。
+
+### 3. 开始聊天
+
+打开 IM 应用，给你的机器人发消息，当前安装的宿主代理会回复。
+
+权限行为取决于 runtime：
+
+- **Claude runtime** — 工具调用可在聊天中逐条审批
+- **Codex runtime** — 当 `approval_policy=on-request` 时，bridge 会在启动这一轮 Codex 执行前先在聊天里发起审批
+
+## 命令列表
+
+所有命令都在当前安装的宿主里执行：
+
+| 支持斜杠命令的宿主 | 支持自然语言的宿主 | 说明 |
+|---|---|---|
+| `/codex-to-im setup` | "codex-to-im setup" / "配置" | 交互式配置向导 |
+| `/codex-to-im start` | "start bridge" / "启动桥接" | 启动桥接守护进程 |
+| `/codex-to-im stop` | "stop bridge" / "停止桥接" | 停止守护进程 |
+| `/codex-to-im status` | "bridge status" / "状态" | 查看运行状态 |
+| `/codex-to-im logs` | "查看日志" | 查看最近 50 行日志 |
+| `/codex-to-im logs 200` | "logs 200" | 查看最近 200 行日志 |
+| `/codex-to-im reconfigure` | "reconfigure" / "修改配置" | 交互式修改配置 |
+| `/codex-to-im doctor` | "doctor" / "诊断" | 诊断问题 |
+
+Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
+
+| IM 命令 | 说明 |
 |---|---|
 | `/lsessions` | 列出活跃 bridge 会话，显示名称、短 ID、渠道、状态、最近活跃时间和摘要 |
-| `/lsessions --all` | 列出全部会话，包括已归档会话 |
-| `/switchto <session_id\|name>` | 让当前 IM 对话切换到一个已有会话，支持按 ID 或已命名名称切换 |
-| `/rename <new_name>` | 重命名当前会话 |
+| `/lsessions --all` | 同时显示已归档会话 |
+| `/switchto &lt;session_id\|name&gt;` | 让当前聊天切换到一个已有会话，支持按 ID 或名称切换 |
+| `/rename &lt;new_name&gt;` | 重命名当前会话 |
 | `/archive [session_id\|name]` | 归档当前会话或指定会话，并保留简短摘要 |
-| `/unarchive <session_id\|name>` | 恢复一个已归档会话到活跃列表 |
+| `/unarchive &lt;session_id\|name&gt;` | 恢复一个已归档会话 |
 
-实现说明：
-- 会话名称、归档状态、摘要和最近活跃时间会持久化到 `~/.<host>-to-im/data/session-meta.json`
-- 如果归档的是当前会话，桥接会自动为当前聊天创建一个新会话，避免后续消息继续写入归档任务
-- 现有的 `/new`、`/bind`、`/status`、`/cwd`、`/mode`、`/stop`、`/help` 等命令仍然可用
+## 平台配置指南
+
+`setup` 向导会在每一步提供内联指引，以下是概要：
+
+### Telegram
+
+1. 在 Telegram 中搜索 `@BotFather` → 发送 `/newbot` → 按提示操作
+2. 复制 bot token（格式：`123456789:AABbCc...`）
+3. 建议：`/setprivacy` → Disable（用于群组）
+4. 获取 User ID：给 `@userinfobot` 发消息
+
+### Discord
+
+1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) → 新建应用
+2. Bot 标签页 → Reset Token → 复制 token
+3. 在 Privileged Gateway Intents 下开启 **Message Content Intent**
+4. OAuth2 → URL Generator → scope 选 `bot` → 权限选 Send Messages、Read Message History、View Channels → 复制邀请链接
+
+### 飞书 / Lark
+
+1. 前往[飞书开放平台](https://open.feishu.cn/app)（或 [Lark](https://open.larksuite.com/app)）
+2. 创建自建应用 → 获取 App ID 和 App Secret
+3. **批量添加权限**：进入"权限管理" → 使用批量配置添加所有必需权限（`setup` 向导提供完整 JSON）
+4. 在"添加应用能力"中启用机器人
+5. **事件与回调**：选择**长连接**作为事件订阅方式 → 添加 `im.message.receive_v1` 事件
+6. **发布**：进入"版本管理与发布" → 创建版本 → 提交审核 → 在管理后台审核通过
+7. **注意**：版本审核通过并发布后机器人才能使用
+
+## 架构
+
+```
+~/.<host>-to-im/
+├── config.env             ← 凭据与配置 (chmod 600)
+├── data/                  ← 持久化 JSON 存储
+│   ├── sessions.json
+│   ├── bindings.json
+│   ├── permissions.json
+│   └── messages/          ← 按会话分文件的消息历史
+├── logs/
+│   └── bridge.log         ← 自动轮转，密钥脱敏
+└── runtime/
+    ├── bridge.pid          ← 守护进程 PID 文件
+    └── status.json         ← 当前状态
+```
+
+### 核心组件
+
+| 组件 | 职责 |
+|---|---|
+| `src/main.ts` | 守护进程入口，组装依赖注入，启动 bridge |
+| `src/config.ts` | 加载/保存 `config.env`，映射为 bridge 设置 |
+| `src/store.ts` | JSON 文件 BridgeStore（30 个方法，写穿缓存） |
+| `src/llm-provider.ts` | Claude Agent SDK `query()` → SSE 流 |
+| `src/codex-provider.ts` | Codex SDK `runStreamed()` → SSE 流 |
+| `src/sse-utils.ts` | 共享的 SSE 格式化辅助函数 |
+| `src/permission-gateway.ts` | 异步桥接权限解析与 IM 审批交接 |
+| `src/logger.ts` | 密钥脱敏的文件日志，支持轮转 |
+| `scripts/daemon.sh` | 进程管理（start/stop/status/logs） |
+| `scripts/doctor.sh` | 诊断检查 |
+| `SKILL.md` | 宿主 Skill 定义文件 |
+
+### 权限流程
+
+Claude runtime：
+
+```
+1. 代理想使用工具（如编辑文件）
+2. SDK 调用 canUseTool() → LLMProvider 发射 permission_request SSE 事件
+3. Bridge 在 IM 聊天中发送内联按钮：[允许] [拒绝]
+4. canUseTool() 阻塞等待用户响应（5 分钟超时）
+5. 用户点击允许 → Bridge 解除权限等待
+6. SDK 继续执行工具 → 结果流式发回 IM
+```
+
+Codex runtime：
+
+```
+1. Bridge 为当前这一轮解析 Codex 的 approval policy
+2. 如果 `approval_policy=on-request`，CodexProvider 会在执行前发出一个 synthetic permission_request
+3. Bridge 在 IM 中发送审批控件或 `/perm allow|deny <id>` 提示
+4. 用户批准 → 这一轮 Codex 执行才开始
+5. 用户拒绝或超时 → 这一轮不会开始执行
+```
+
+## 故障排查
+
+运行诊断：
+
+```
+/codex-to-im doctor
+```
+
+检查项目：Node.js 版本、配置文件是否存在及权限、token 有效性（实时 API 调用）、日志目录、PID 文件一致性、最近的错误。
+
+| 问题 | 解决方案 |
+|---|---|
+| `Bridge 无法启动` | 运行 `doctor`，检查 Node 版本和日志 |
+| `收不到消息` | 用 `doctor` 验证 token，检查允许用户配置 |
+| `权限超时` | 用户 5 分钟内未响应，工具调用自动拒绝 |
+| `PID 文件残留` | 运行 `stop` 再 `start`，脚本会自动清理 |
+
+详见 [references/troubleshooting.md](references/troubleshooting.md)。
+
+## 安全
+
+- 所有凭据存储在 `~/.codex-to-im/config.env`，权限 `chmod 600`
+- 日志输出中 token 自动脱敏（基于正则匹配）
+- 允许用户/频道/服务器列表限制谁可以与机器人交互
+- 守护进程是本地进程，没有入站网络监听
+- 详见 [SECURITY.md](SECURITY.md) 了解威胁模型和应急响应
 
 ## 开发
 
 ```bash
-npm install
-npm test
-npm run build
+npm install        # 安装依赖
+npm run dev        # 开发模式运行
+npm run typecheck  # 类型检查
+npm test           # 运行测试
+npm run build      # 构建打包
 ```
 
-如果你修改了仓库首页模板，可用下面的命令重新渲染根 README：
-
-```bash
-node scripts/render-host-templates.mjs --repo-home --target .
-```
-
-## 许可证
+## 许可
 
 [MIT](LICENSE)

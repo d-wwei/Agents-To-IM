@@ -53,7 +53,7 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
 
   if (runtime === 'codex') {
     const { CodexProvider } = await import('./codex-provider.js');
-    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false);
+    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false, config.autoApprove);
   }
 
   if (runtime === 'auto') {
@@ -80,7 +80,7 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
       console.log(`[${LOG_PREFIX}] Auto: neither Gemini nor Claude CLI found, falling back to Codex`);
     }
     const { CodexProvider } = await import('./codex-provider.js');
-    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false);
+    return new CodexProvider(pendingPerms, config.codexSkipGitRepoCheck !== false, config.autoApprove);
   }
 
   // Default: claude
