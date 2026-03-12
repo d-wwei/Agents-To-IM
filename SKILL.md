@@ -1,10 +1,10 @@
 ---
-name: link-to-im
+name: claude-to-im
 description: |
   This skill bridges the current host coding agent to IM platforms (Telegram, Discord, Feishu/Lark, QQ).
   Use for: setting up, starting, stopping, or diagnosing the IM bridge daemon;
   forwarding agent replies to a messaging app.
-  Trigger on: "link-to-im", "start bridge", "stop bridge", "bridge status",
+  Trigger on: "claude-to-im", "start bridge", "stop bridge", "bridge status",
   "消息推送", "消息转发", "桥接", "连上飞书", "手机上看claude",
   "启动后台服务", "诊断", "查看日志", "启动桥接", "停止桥接", "配置",
   or any mention of IM bridge management.
@@ -22,13 +22,13 @@ allowed-tools:
   - Glob
 ---
 
-# Link-to-IM Bridge Skill
+# Claude-to-IM Bridge Skill
 
-You are managing the Link-to-IM bridge.
-User data is stored at `~/.link-to-im/`.
+You are managing the Claude-to-IM bridge.
+User data is stored at `~/.claude-to-im/`.
 
 First, locate the skill directory by finding this SKILL.md file:
-- Use Glob with pattern `**/skills/**/link-to-im/SKILL.md` to find its path, then derive the skill root directory from it.
+- Use Glob with pattern `**/skills/**/claude-to-im/SKILL.md` to find its path, then derive the skill root directory from it.
 - Store that path mentally as SKILL_DIR for all subsequent file references.
 
 ## Command parsing
@@ -37,7 +37,7 @@ Parse the user's intent from `$ARGUMENTS` into one of these subcommands:
 
 | User says (examples) | Subcommand |
 |---|---|
-| `setup`, `configure`, `配置`, `我想在飞书上用 Link`, `帮我连接 Telegram` | setup |
+| `setup`, `configure`, `配置`, `我想在飞书上用 Claude`, `帮我连接 Telegram` | setup |
 | `start`, `start bridge`, `启动`, `启动桥接` | start |
 | `stop`, `stop bridge`, `停止`, `停止桥接` | stop |
 | `status`, `bridge status`, `状态`, `运行状态`, `怎么看桥接的运行状态` | status |
@@ -56,17 +56,17 @@ Before asking users for any platform credentials, first read `SKILL_DIR/referenc
 Before executing any subcommand, detect which environment you are running in:
 
 1. **Interactive skill hosts** — `AskUserQuestion` tool is available. Use it for interactive setup wizards.
-2. **Non-interactive hosts** — `AskUserQuestion` is NOT available. Fall back to non-interactive guidance: explain the steps, show `SKILL_DIR/config.env.example`, and ask the user to create `~/.link-to-im/config.env` manually.
+2. **Non-interactive hosts** — `AskUserQuestion` is NOT available. Fall back to non-interactive guidance: explain the steps, show `SKILL_DIR/config.env.example`, and ask the user to create `~/.claude-to-im/config.env` manually.
 
 You can test this by checking if AskUserQuestion is in your available tools list.
 
 ## Config check (applies to `start`, `stop`, `status`, `logs`, `reconfigure`, `doctor`)
 
-Before running any subcommand other than `setup`, check if `~/.link-to-im/config.env` exists:
+Before running any subcommand other than `setup`, check if `~/.claude-to-im/config.env` exists:
 
 - **If it does NOT exist:**
   - In interactive hosts: tell the user "No configuration found" and automatically start the `setup` wizard using AskUserQuestion.
-  - In non-interactive hosts: tell the user "No configuration found. Please create `~/.link-to-im/config.env` based on the example:" then show the contents of `SKILL_DIR/config.env.example` and stop. Do NOT attempt to start the daemon — without config.env the process will crash on startup and leave behind a stale PID file that blocks future starts.
+  - In non-interactive hosts: tell the user "No configuration found. Please create `~/.claude-to-im/config.env` based on the example:" then show the contents of `SKILL_DIR/config.env.example` and stop. Do NOT attempt to start the daemon — without config.env the process will crash on startup and leave behind a stale PID file that blocks future starts.
 - **If it exists:** proceed with the requested subcommand.
 
 ## Subcommands
@@ -104,11 +104,11 @@ For each enabled channel, read `SKILL_DIR/references/setup-guides.md` and presen
 **Step 3 — General settings**
 
 Ask for runtime, default working directory, model, and mode:
-- **Runtime**: `claude`, `codex`, `gemini`, `auto`
-  - `claude` — uses Claude CLI + Claude Agent SDK
-  - `codex` — uses OpenAI Codex SDK
-  - `gemini` — uses Gemini CLI
-  - `auto` — tries Gemini first, then Claude, then falls back to Codex if needed
+- **Runtime**: `claude` (default), `codex`, `gemini`, `auto`
+  - `claude` — recommended in this host; uses Claude Code CLI + Claude Agent SDK
+  - `codex` — optional alternative; uses OpenAI Codex SDK
+  - `gemini` — optional alternative; uses Gemini CLI
+  - `auto` — tries Gemini first, then Claude, then falls back to Codex
 - **Working Directory**: default `$CWD`
 - **Model** (optional): Leave blank to inherit the runtime's own default model. If the user wants to override, ask them to enter a model name. Do NOT hardcode or suggest specific model names — the available models change over time.
 - **Mode**: `code` (default), `plan`, `ask`
@@ -117,22 +117,22 @@ Ask for runtime, default working directory, model, and mode:
 
 1. Show a final summary table with all settings (secrets masked to last 4 chars)
 2. Ask user to confirm before writing
-3. Use Bash to create directory structure: `mkdir -p ~/.link-to-im/{data,logs,runtime,data/messages}`
-4. Use Write to create `~/.link-to-im/config.env` with all settings in KEY=VALUE format
-5. Use Bash to set permissions: `chmod 600 ~/.link-to-im/config.env`
+3. Use Bash to create directory structure: `mkdir -p ~/.claude-to-im/{data,logs,runtime,data/messages}`
+4. Use Write to create `~/.claude-to-im/config.env` with all settings in KEY=VALUE format
+5. Use Bash to set permissions: `chmod 600 ~/.claude-to-im/config.env`
 6. Validate tokens — read `SKILL_DIR/references/token-validation.md` for the exact commands and expected responses for each platform. This catches typos and wrong credentials before the user tries to start the daemon.
 7. Report results with a summary table. If any validation fails, explain what might be wrong and how to fix it.
-8. On success, tell the user: "Setup complete! Run `/link-to-im start` to start the bridge."
+8. On success, tell the user: "Setup complete! Run `/claude-to-im start` to start the bridge."
 
 ### `start`
 
-**Pre-check:** Verify `~/.link-to-im/config.env` exists (see "Config check" above). Without it, the daemon will crash immediately and leave a stale PID file.
+**Pre-check:** Verify `~/.claude-to-im/config.env` exists (see "Config check" above). Without it, the daemon will crash immediately and leave a stale PID file.
 
 Run: `bash "SKILL_DIR/scripts/daemon.sh" start`
 
 Show the output to the user. If it fails, tell the user:
-- Run `doctor` to diagnose: `/link-to-im doctor`
-- Check recent logs: `/link-to-im logs`
+- Run `doctor` to diagnose: `/claude-to-im doctor`
+- Check recent logs: `/claude-to-im logs`
 
 ### `stop`
 
@@ -149,13 +149,13 @@ Run: `bash "SKILL_DIR/scripts/daemon.sh" logs N`
 
 ### `reconfigure`
 
-1. Read current config from `~/.link-to-im/config.env`
+1. Read current config from `~/.claude-to-im/config.env`
 2. Show current settings in a clear table format, with all secrets masked (only last 4 chars visible)
 3. Use AskUserQuestion to ask what the user wants to change
 4. When collecting new values, read `SKILL_DIR/references/setup-guides.md` and present the relevant guide for that field
 5. Update the config file atomically (write to tmp, rename)
 6. Re-validate any changed tokens
-7. Remind user: "Run `/link-to-im stop` then `/link-to-im start` to apply the changes."
+7. Remind user: "Run `/claude-to-im stop` then `/claude-to-im start` to apply the changes."
 
 ### `doctor`
 
@@ -173,4 +173,4 @@ For more complex issues (messages not received, permission timeouts, high memory
 - Always mask secrets in output (show only last 4 characters) — users often share terminal output in bug reports, so exposed tokens would be a security incident.
 - Always check for config.env before starting the daemon — without it the process crashes on startup and leaves a stale PID file that blocks future starts (requiring manual cleanup).
 - The daemon runs as a background Node.js process managed by platform supervisor (launchd on macOS, setsid on Linux, WinSW/NSSM on Windows).
-- Config persists at `~/.link-to-im/config.env` — survives across sessions.
+- Config persists at `~/.claude-to-im/config.env` — survives across sessions.

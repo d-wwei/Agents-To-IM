@@ -7,7 +7,7 @@ This skill works with both slash-command hosts and natural-language hosts. Examp
 Interactive wizard that configures the bridge.
 
 ```
-/codex-to-im setup
+/claude-to-im setup
 ```
 
 The wizard will prompt you for:
@@ -23,7 +23,7 @@ After collecting input, the wizard validates tokens by calling each platform's A
 Example interaction:
 
 ```
-> /codex-to-im setup
+> /claude-to-im setup
 Which channels to enable? telegram,discord
 Enter Telegram bot token: <your-token>
 Enter Discord bot token: <your-token>
@@ -35,7 +35,7 @@ Validating tokens...
   Telegram: OK (bot @MyBotName)
   Discord: OK (format valid)
 
-Config written to ~/.codex-to-im/config.env
+Config written to ~/.claude-to-im/config.env
 ```
 
 ## start
@@ -43,23 +43,19 @@ Config written to ~/.codex-to-im/config.env
 Starts the bridge daemon in the background.
 
 ```
-/codex-to-im start
+/claude-to-im start
 ```
 
-The daemon process ID is stored in `~/.codex-to-im/runtime/bridge.pid`. If the daemon is already running, the command reports the existing process.
+The daemon process ID is stored in `~/.claude-to-im/runtime/bridge.pid`. If the daemon is already running, the command reports the existing process.
 
-If startup fails, run `/codex-to-im doctor` to diagnose issues.
-
-Approval behavior depends on runtime:
-- Claude runtime: tool-level approval requests can be forwarded to IM.
-- Codex runtime: when `CTI_CODEX_APPROVAL_POLICY=on-request`, the bridge sends a pre-turn approval request before the Codex turn starts.
+If startup fails, run `/claude-to-im doctor` to diagnose issues.
 
 ## stop
 
 Stops the running bridge daemon.
 
 ```
-/codex-to-im stop
+/claude-to-im stop
 ```
 
 Sends SIGTERM to the daemon process and cleans up the PID file.
@@ -69,7 +65,7 @@ Sends SIGTERM to the daemon process and cleans up the PID file.
 Shows whether the daemon is running and basic health information.
 
 ```
-/codex-to-im status
+/claude-to-im status
 ```
 
 Output includes:
@@ -83,25 +79,25 @@ Output includes:
 Shows recent log output from the daemon.
 
 ```
-/codex-to-im logs        # Last 50 lines (default)
-/codex-to-im logs 200    # Last 200 lines
+/claude-to-im logs        # Last 50 lines (default)
+/claude-to-im logs 200    # Last 200 lines
 ```
 
-Logs are stored in `~/.codex-to-im/logs/` and are automatically redacted to mask secrets.
+Logs are stored in `~/.claude-to-im/logs/` and are automatically redacted to mask secrets.
 
 ## reconfigure
 
 Interactively update the current configuration.
 
 ```
-/codex-to-im reconfigure
+/claude-to-im reconfigure
 ```
 
 Displays current settings with secrets masked, then prompts for changes. After updating, you must restart the daemon for changes to take effect:
 
 ```
-/codex-to-im stop
-/codex-to-im start
+/claude-to-im stop
+/claude-to-im start
 ```
 
 ## doctor
@@ -109,7 +105,7 @@ Displays current settings with secrets masked, then prompts for changes. After u
 Runs diagnostic checks and reports issues.
 
 ```
-/codex-to-im doctor
+/claude-to-im doctor
 ```
 
 Checks performed:
