@@ -137,6 +137,11 @@ function writeStatus(info: StatusInfo): void {
 }
 
 async function main(): Promise<void> {
+  // Early stderr breadcrumb — written BEFORE setupLogger() so that if the
+  // logger or config loading crashes, there is still *something* in stderr
+  // for the Windows supervisor to capture in bridge-err.log.
+  process.stderr.write(`[${LOG_PREFIX}] daemon.mjs starting (pid=${process.pid})\n`);
+
   const config = loadConfig();
   setupLogger();
 

@@ -227,12 +227,46 @@ function Start-Fallback {
     # Remove CLAUDECODE
     [System.Environment]::SetEnvironmentVariable('CLAUDECODE', $null)
 
+    # ── Load config.env into current process environment ──
+    # The child process inherits these, so daemon.mjs (and its adapters)
+    # will see CTI_FEISHU_APP_ID, CTI_FEISHU_APP_SECRET, etc.
+    $configEnv = Join-Path $CtiHome 'config.env'
+    if (Test-Path $configEnv) {
+        Get-Content $configEnv | ForEach-Object {
+            $line = $_.Trim()
+            # Skip comments and blank lines
+            if ($line -and -not $line.StartsWith('#')) {
+                # Strip optional 'export ' prefix
+                if ($line.StartsWith('export ')) { $line = $line.Substring(7) }
+                $eqIdx = $line.IndexOf('=')
+                if ($eqIdx -gt 0) {
+                    $key = $line.Substring(0, $eqIdx).Trim()
+                    $val = $line.Substring($eqIdx + 1).Trim().Trim("'").Trim('"')
+                    [System.Environment]::SetEnvironmentVariable($key, $val)
+                }
+            }
+        }
+        Write-Host "  Loaded config.env ($configEnv)"
+    }
+
+    # ── Smoke test: verify daemon.mjs can at least be parsed by Node ──
+    try {
+        $smokeResult = & $nodePath -e "require('$($DaemonMjs.Replace('\','/'))')" 2>&1
+    } catch {
+        # Non-fatal: smoke test failure is logged but we still attempt to start
+        Write-Host "  Warning: smoke test failed: $_"
+    }
+
+    # ── Start the process ──
+    # Do NOT redirect stdout — daemon.mjs's setupLogger() writes to bridge.log
+    # via its own fs.createWriteStream. Only capture stderr to a separate file
+    # for crash diagnostics that happen before the logger initialises.
+    $stderrLog = Join-Path $CtiHome 'logs' 'bridge-err.log'
     $proc = Start-Process -FilePath $nodePath `
         -ArgumentList $DaemonMjs `
         -WorkingDirectory $SkillDir `
         -WindowStyle Hidden `
-        -RedirectStandardOutput $LogFile `
-        -RedirectStandardError $LogFile `
+        -RedirectStandardError $stderrLog `
         -PassThru
 
     # Write initial PID (main.ts will overwrite with real PID)

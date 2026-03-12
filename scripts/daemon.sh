@@ -127,9 +127,14 @@ case "$(uname -s)" in
     source "$SKILL_DIR/scripts/supervisor-macos.sh"
     ;;
   MINGW*|MSYS*|CYGWIN*)
-    # Windows detected via Git Bash / MSYS2 / Cygwin — delegate to PowerShell
+    # Windows detected via Git Bash / MSYS2 / Cygwin — delegate to PowerShell.
+    # NOTE: We use -Command instead of -File because Git Bash expands "$@"
+    # in ways that cause ParameterBindingException with -File mode.
     echo "Windows detected. Delegating to supervisor-windows.ps1..."
-    powershell.exe -ExecutionPolicy Bypass -File "$SKILL_DIR/scripts/supervisor-windows.ps1" "$@"
+    _CMD="${1:-help}"
+    _LOGLINES="${2:-50}"
+    powershell.exe -ExecutionPolicy Bypass -Command \
+      "& '${SKILL_DIR}/scripts/supervisor-windows.ps1' -Command '${_CMD}' -LogLines ${_LOGLINES}"
     exit $?
     ;;
   *)
