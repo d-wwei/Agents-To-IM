@@ -166,6 +166,8 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private typingReactions = new Map<string, string>();
   private tenantAccessToken: string | null = null;
   private tenantAccessTokenExpiresAt = 0;
+  private senderNameCache = new Map<string, string | null>();
+  private contactPermissionAvailable = true;
 
   // ── Lifecycle ───────────────────────────────────────────────
 
@@ -242,6 +244,8 @@ export class FeishuAdapter extends BaseChannelAdapter {
     this.seenMessageIds.clear();
     this.lastIncomingMessageId.clear();
     this.typingReactions.clear();
+    this.senderNameCache.clear();
+    this.contactPermissionAvailable = true;
     this.tenantAccessToken = null;
     this.tenantAccessTokenExpiresAt = 0;
 
@@ -926,6 +930,10 @@ export class FeishuAdapter extends BaseChannelAdapter {
         }
         // Don't add fallback text for individual post images — the text already carries context
       }
+    } else if (messageType === 'merge_forward') {
+      const result = await this.parseMergeForwardContent(msg.message_id);
+      text = result.text;
+      attachments.push(...result.attachments);
     } else {
       // Unsupported type — log and skip
       console.log(`[feishu-adapter] Unsupported message type: ${messageType}, msgId: ${msg.message_id}`);
@@ -989,6 +997,189 @@ export class FeishuAdapter extends BaseChannelAdapter {
     } catch { /* best effort */ }
 
     this.enqueue(inbound);
+  }
+
+  // ── Merge-forward support ───────────────────────────────────
+
+  /** Max entries in the sender name cache. */
+  private static readonly SENDER_CACHE_MAX = 500;
+
+  /**
+   * Resolve a Feishu open_id to a human-readable display name.
+   * Uses an in-memory LRU cache and the contact.v3.user.get API.
+   * Returns null when the name cannot be determined.
+   */
+  private async resolveUserName(openId: string): Promise<string | null> {
+    if (this.senderNameCache.has(openId)) {
+      return this.senderNameCache.get(openId)!;
+    }
+
+    if (!this.contactPermissionAvailable || !this.restClient) {
+      this.senderNameCache.set(openId, null);
+      this.evictSenderCacheIfNeeded();
+      return null;
+    }
+
+    try {
+      const res = await this.restClient.contact.v3.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const user = (res as any)?.data?.user;
+      const name: string | null = user?.name || null;
+      this.senderNameCache.set(openId, name);
+      this.evictSenderCacheIfNeeded();
+      return name;
+    } catch (err) {
+      // Permission denied (code 99991401 / 99991403) → disable further attempts
+      const code = (err as { code?: number })?.code;
+      if (code === 99991401 || code === 99991403) {
+        console.warn('[feishu-adapter] Contact permission unavailable, disabling name resolution');
+        this.contactPermissionAvailable = false;
+      }
+      this.senderNameCache.set(openId, null);
+      this.evictSenderCacheIfNeeded();
+      return null;
+    }
+  }
+
+  private evictSenderCacheIfNeeded(): void {
+    if (this.senderNameCache.size <= FeishuAdapter.SENDER_CACHE_MAX) return;
+    const excess = this.senderNameCache.size - FeishuAdapter.SENDER_CACHE_MAX;
+    let removed = 0;
+    for (const key of this.senderNameCache.keys()) {
+      if (removed >= excess) break;
+      this.senderNameCache.delete(key);
+      removed++;
+    }
+  }
+
+  /**
+   * Parse a merge_forward message: fetch child messages via the get API,
+   * resolve sender names, and format as a readable conversation block.
+   *
+   * Feishu docs: call GET /im/v1/messages/{message_id} with the merge_forward
+   * message_id → returns items[] where child messages have upper_message_id
+   * pointing to the parent.
+   */
+  private async parseMergeForwardContent(
+    messageId: string,
+  ): Promise<{ text: string; attachments: FileAttachment[] }> {
+    if (!this.restClient) {
+      return { text: '[合并转发消息：客户端未初始化]', attachments: [] };
+    }
+
+    try {
+      // GET /im/v1/messages/{message_id} returns the merge_forward message
+      // itself plus all child messages in data.items[].
+      const res = await this.restClient.im.message.get({
+        path: { message_id: messageId },
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allItems: any[] = (res as any)?.data?.items || [];
+
+      // Filter: only keep child messages whose upper_message_id matches
+      // the merge_forward parent. The first item is usually the parent itself.
+      const items = allItems.filter(
+        (item: any) => item.upper_message_id === messageId,
+      );
+
+      if (items.length === 0) {
+        return { text: '[合并转发消息：无法获取子消息内容]', attachments: [] };
+      }
+
+      const lines: string[] = [];
+      const attachments: FileAttachment[] = [];
+      const unknownSenderIds = new Set<string>();
+
+      for (const item of items) {
+        // The get API returns sender as { sender_id: { open_id, ... }, sender_type }
+        const senderId: string = item.sender?.sender_id?.open_id
+          || item.sender?.sender_id?.user_id
+          || item.sender?.id
+          || '';
+        const senderType: string = item.sender?.sender_type || '';
+        const msgType: string = item.msg_type || '';
+        const body: string = typeof item.body?.content === 'string' ? item.body.content : '';
+        const childMsgId: string = item.message_id || '';
+
+        // Resolve sender display name
+        let senderLabel: string;
+        if (senderType === 'bot') {
+          senderLabel = '(bot)';
+        } else if (senderId) {
+          const name = await this.resolveUserName(senderId);
+          if (name) {
+            senderLabel = name;
+          } else {
+            senderLabel = senderId;
+            unknownSenderIds.add(senderId);
+          }
+        } else {
+          senderLabel = '(unknown)';
+        }
+
+        // Parse content by message type
+        let content: string;
+        if (msgType === 'text') {
+          content = this.parseTextContent(body);
+        } else if (msgType === 'post') {
+          const { extractedText, imageKeys } = this.parsePostContent(body);
+          content = extractedText || '[富文本]';
+          for (const key of imageKeys) {
+            if (childMsgId) {
+              const att = await this.downloadResource(childMsgId, key, 'image');
+              if (att) attachments.push(att);
+            }
+          }
+        } else if (msgType === 'image') {
+          content = '[图片]';
+          const fileKey = this.extractFileKey(body);
+          if (fileKey && childMsgId) {
+            const att = await this.downloadResource(childMsgId, fileKey, 'image');
+            if (att) attachments.push(att);
+          }
+        } else if (msgType === 'file') {
+          content = '[文件]';
+        } else if (msgType === 'audio') {
+          content = '[语音]';
+        } else if (msgType === 'video' || msgType === 'media') {
+          content = '[视频]';
+        } else if (msgType === 'sticker') {
+          content = '[表情]';
+        } else if (msgType === 'merge_forward') {
+          content = '[嵌套合并转发]';
+        } else {
+          content = `[${msgType || '未知类型'}]`;
+        }
+
+        lines.push(`${senderLabel}: ${content}`);
+      }
+
+      let text = '--- 以下是一组合并转发的聊天记录 ---\n'
+        + lines.join('\n')
+        + '\n--- 合并转发结束 ---';
+
+      // If contact permission is unavailable, hint the user
+      if (unknownSenderIds.size > 0 && !this.contactPermissionAvailable) {
+        const ids = Array.from(unknownSenderIds).join(', ');
+        text += `\n(无法自动获取发送者姓名，应用可能缺少通讯录权限。如果你知道这些 ID 对应的人，请告诉我：${ids})`;
+      }
+
+      return { text, attachments };
+    } catch (err) {
+      console.error(
+        '[feishu-adapter] Failed to parse merge_forward content:',
+        err instanceof Error ? err.stack || err.message : err,
+      );
+      return {
+        text: '[合并转发消息：获取内容失败，请尝试直接复制文字发送]',
+        attachments: [],
+      };
+    }
   }
 
   // ── Content parsing ─────────────────────────────────────────
