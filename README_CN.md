@@ -1,4 +1,4 @@
-# Claude-to-IM Skill
+# Codex-to-IM Skill
 
 将当前安装的 AI 编程宿主桥接到 IM 平台 —— 在 Telegram、Discord 或飞书中与 AI 编程代理对话。
 
@@ -24,7 +24,7 @@
 
 - **三大 IM 平台** — Telegram、Discord、飞书，可任意组合启用
 - **交互式配置** — 引导式向导逐步收集 token，附带详细获取说明
-- **权限控制** — 工具调用需要在聊天中通过内联按钮明确批准
+- **权限控制** — Claude 支持逐工具内联审批；Codex 在 `approval_policy=on-request` 时支持 IM 中的单轮前置审批
 - **流式预览** — 实时查看 Claude 的输出（Telegram 和 Discord 支持）
 - **会话持久化** — 对话在守护进程重启后保留
 - **密钥保护** — token 以 `chmod 600` 存储，日志中自动脱敏
@@ -34,8 +34,8 @@
 ## 前置要求
 
 - **Node.js >= 20**
-- **Claude Code CLI** — 已安装并完成认证（`claude` 命令可用）
-- **可选的 Codex CLI**（仅当你计划使用 `CTI_RUNTIME=codex` 或 `auto` 时）— `npm install -g @openai/codex`
+- **Codex CLI** — 已安装并完成认证（`codex` 命令可用；可通过 `codex login` 登录）
+- **可选的 Claude CLI**（仅当你计划使用 `CTI_RUNTIME=claude` 或 `auto` 时）
 
 ## 安装
 
@@ -48,7 +48,7 @@ npx skills add op7418/Claude-to-IM-skill
 ### Git 克隆
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
 ```
 
 将仓库直接克隆到所选宿主的 Skills 目录。
@@ -59,16 +59,16 @@ git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/clau
 
 ```bash
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-mkdir -p ~/.claude/skills
-ln -s ~/code/Claude-to-IM-skill ~/.claude/skills/claude-to-im
+mkdir -p ~/.codex/skills
+ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
 ```
 
-### Claude
+### Codex
 
-如果你使用 Claude Code，直接克隆到 Claude skills 目录：
+如果你使用 Codex，直接克隆到 Codex skills 目录：
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
 ```
 
 或使用提供的安装脚本，自动安装依赖并构建：
@@ -76,10 +76,10 @@ git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/clau
 ```bash
 # 克隆并安装（复制模式）
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh
 
 # 或使用符号链接模式（方便开发）
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh --link
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh --link
 ```
 
 ### 多宿主安装
@@ -100,14 +100,14 @@ bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
 
 ### 验证安装
 
-**Claude：** 启动新会话，输入 `/` 应能看到 `claude-to-im`。
+**Codex：** 启动新会话，说 `codex-to-im setup` 或“启动桥接”，Codex 会识别 Skill 并使用 `~/.codex-to-im` 作为运行时目录。
 
 ## 快速开始
 
 ### 1. 配置
 
 ```
-/claude-to-im setup
+/codex-to-im setup
 ```
 
 向导会引导你完成以下步骤：
@@ -120,7 +120,7 @@ bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
 ### 2. 启动
 
 ```
-/claude-to-im start
+/codex-to-im start
 ```
 
 守护进程在后台启动。关闭终端后仍会继续运行。
@@ -129,7 +129,10 @@ bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
 
 打开 IM 应用，给你的机器人发消息，当前安装的宿主代理会回复。
 
-当代理需要使用工具（编辑文件、运行命令）时，聊天中会弹出带有 **允许** / **拒绝** 按钮的权限请求。
+权限行为取决于 runtime：
+
+- **Claude runtime** — 工具调用可在聊天中逐条审批
+- **Codex runtime** — 当 `approval_policy=on-request` 时，bridge 会在启动这一轮 Codex 执行前先在聊天里发起审批
 
 ## 命令列表
 
@@ -137,14 +140,14 @@ bash ~/code/Claude-to-IM-skill/scripts/install-host.sh --host gemini
 
 | 支持斜杠命令的宿主 | 支持自然语言的宿主 | 说明 |
 |---|---|---|
-| `/claude-to-im setup` | "claude-to-im setup" / "配置" | 交互式配置向导 |
-| `/claude-to-im start` | "start bridge" / "启动桥接" | 启动桥接守护进程 |
-| `/claude-to-im stop` | "stop bridge" / "停止桥接" | 停止守护进程 |
-| `/claude-to-im status` | "bridge status" / "状态" | 查看运行状态 |
-| `/claude-to-im logs` | "查看日志" | 查看最近 50 行日志 |
-| `/claude-to-im logs 200` | "logs 200" | 查看最近 200 行日志 |
-| `/claude-to-im reconfigure` | "reconfigure" / "修改配置" | 交互式修改配置 |
-| `/claude-to-im doctor` | "doctor" / "诊断" | 诊断问题 |
+| `/codex-to-im setup` | "codex-to-im setup" / "配置" | 交互式配置向导 |
+| `/codex-to-im start` | "start bridge" / "启动桥接" | 启动桥接守护进程 |
+| `/codex-to-im stop` | "stop bridge" / "停止桥接" | 停止守护进程 |
+| `/codex-to-im status` | "bridge status" / "状态" | 查看运行状态 |
+| `/codex-to-im logs` | "查看日志" | 查看最近 50 行日志 |
+| `/codex-to-im logs 200` | "logs 200" | 查看最近 200 行日志 |
+| `/codex-to-im reconfigure` | "reconfigure" / "修改配置" | 交互式修改配置 |
+| `/codex-to-im doctor` | "doctor" / "诊断" | 诊断问题 |
 
 Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
 
@@ -190,6 +193,7 @@ Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
 ```
 ~/.<host>-to-im/
 ├── config.env             ← 凭据与配置 (chmod 600)
+├── openai.local.env       ← 可选的本地 include secrets 文件 (chmod 600)
 ├── data/                  ← 持久化 JSON 存储
 │   ├── sessions.json
 │   ├── bindings.json
@@ -212,13 +216,15 @@ Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
 | `src/llm-provider.ts` | Claude Agent SDK `query()` → SSE 流 |
 | `src/codex-provider.ts` | Codex SDK `runStreamed()` → SSE 流 |
 | `src/sse-utils.ts` | 共享的 SSE 格式化辅助函数 |
-| `src/permission-gateway.ts` | 异步桥接：SDK `canUseTool` ↔ IM 按钮 |
+| `src/permission-gateway.ts` | 异步桥接权限解析与 IM 审批交接 |
 | `src/logger.ts` | 密钥脱敏的文件日志，支持轮转 |
 | `scripts/daemon.sh` | 进程管理（start/stop/status/logs） |
 | `scripts/doctor.sh` | 诊断检查 |
 | `SKILL.md` | 宿主 Skill 定义文件 |
 
 ### 权限流程
+
+Claude runtime：
 
 ```
 1. 代理想使用工具（如编辑文件）
@@ -229,12 +235,22 @@ Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
 6. SDK 继续执行工具 → 结果流式发回 IM
 ```
 
+Codex runtime：
+
+```
+1. Bridge 为当前这一轮解析 Codex 的 approval policy
+2. 如果 `approval_policy=on-request`，CodexProvider 会在执行前发出一个 synthetic permission_request
+3. Bridge 在 IM 中发送审批控件或 `/perm allow|deny <id>` 提示
+4. 用户批准 → 这一轮 Codex 执行才开始
+5. 用户拒绝或超时 → 这一轮不会开始执行
+```
+
 ## 故障排查
 
 运行诊断：
 
 ```
-/claude-to-im doctor
+/codex-to-im doctor
 ```
 
 检查项目：Node.js 版本、配置文件是否存在及权限、token 有效性（实时 API 调用）、日志目录、PID 文件一致性、最近的错误。
@@ -250,7 +266,8 @@ Bridge 还内建了一组可在 IM 聊天中直接使用的会话管理命令：
 
 ## 安全
 
-- 所有凭据存储在 `~/.claude-to-im/config.env`，权限 `chmod 600`
+- 所有凭据存储在 `~/.codex-to-im/config.env`，权限 `chmod 600`
+- `config.env` 也可以按 include 方式引用本地 secrets 文件，例如 `~/.codex-to-im/openai.local.env`；现在加载配置时会真正解析这层 include
 - 日志输出中 token 自动脱敏（基于正则匹配）
 - 允许用户/频道/服务器列表限制谁可以与机器人交互
 - 守护进程是本地进程，没有入站网络监听

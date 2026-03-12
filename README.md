@@ -1,4 +1,4 @@
-# Claude-to-IM Skill
+# Codex-to-IM Skill
 
 Bridge your AI coding host to IM platforms — chat with coding agents from Telegram, Discord, or Feishu/Lark.
 
@@ -24,7 +24,7 @@ Installed host agent → reads/writes your codebase
 
 - **Three IM platforms** — Telegram, Discord, Feishu/Lark, enable any combination
 - **Interactive setup** — guided wizard collects tokens with step-by-step instructions
-- **Permission control** — tool calls require explicit approval via inline buttons in chat
+- **Permission control** — Claude supports tool-level inline approvals; Codex supports pre-turn approval in IM when `approval_policy=on-request`
 - **Streaming preview** — see Claude's response as it types (Telegram & Discord)
 - **Session persistence** — conversations survive daemon restarts
 - **Secret protection** — tokens stored with `chmod 600`, auto-redacted in all logs
@@ -34,8 +34,8 @@ Installed host agent → reads/writes your codebase
 ## Prerequisites
 
 - **Node.js >= 20**
-- **Claude Code CLI** — installed and authenticated (`claude` command available)
-- **Optional Codex CLI** (only if you plan to use `CTI_RUNTIME=codex` or `auto`) — `npm install -g @openai/codex`
+- **Codex CLI** — installed and authenticated (`codex` command available; login via `codex login`)
+- **Optional Claude CLI** (only if you plan to use `CTI_RUNTIME=claude` or `auto`)
 
 ## Installation
 
@@ -48,7 +48,7 @@ npx skills add op7418/Claude-to-IM-skill
 ### Git clone
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
 ```
 
 Clones the repo directly into the selected host skills directory.
@@ -59,16 +59,16 @@ If you prefer to keep the repo elsewhere (e.g., for development):
 
 ```bash
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-mkdir -p ~/.claude/skills
-ln -s ~/code/Claude-to-IM-skill ~/.claude/skills/claude-to-im
+mkdir -p ~/.codex/skills
+ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
 ```
 
-### Claude
+### Codex
 
-If you use Claude Code, clone directly into the Claude skills directory:
+If you use Codex, clone directly into the Codex skills directory:
 
 ```bash
-git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.claude/skills/claude-to-im
+git clone https://github.com/op7418/Claude-to-IM-skill.git ~/.codex/skills/codex-to-im
 ```
 
 Or use the provided install script for automatic dependency installation and build:
@@ -76,10 +76,10 @@ Or use the provided install script for automatic dependency installation and bui
 ```bash
 # Clone and install (copy mode)
 git clone https://github.com/op7418/Claude-to-IM-skill.git ~/code/Claude-to-IM-skill
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh
 
 # Or use symlink mode for development
-bash ~/code/Claude-to-IM-skill/scripts/install-claude.sh --link
+bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh --link
 ```
 
 ### Multi-host install
@@ -100,14 +100,14 @@ This creates isolated skill commands and runtime homes, following the pattern:
 
 ### Verify installation
 
-**Claude:** Start a new session and type `/` — you should see `claude-to-im` in the skill list.
+**Codex:** Start a new session and say `codex-to-im setup` or `start bridge` — Codex will recognize the skill and use `~/.codex-to-im` for its runtime data.
 
 ## Quick Start
 
 ### 1. Setup
 
 ```
-/claude-to-im setup
+/codex-to-im setup
 ```
 
 The wizard will guide you through:
@@ -120,7 +120,7 @@ The wizard will guide you through:
 ### 2. Start
 
 ```
-/claude-to-im start
+/codex-to-im start
 ```
 
 The daemon starts in the background. You can close the terminal — it keeps running.
@@ -129,7 +129,10 @@ The daemon starts in the background. You can close the terminal — it keeps run
 
 Open your IM app and send a message to your bot. Your installed host agent will respond.
 
-When the agent needs to use a tool (edit a file, run a command), you'll see a permission prompt with **Allow** / **Deny** buttons right in the chat.
+Permission behavior depends on runtime:
+
+- **Claude runtime** — tool calls can be approved inline in chat
+- **Codex runtime** — when `approval_policy=on-request`, the bridge asks for a pre-turn approval in chat before starting the Codex turn
 
 ## Commands
 
@@ -137,14 +140,14 @@ All commands are run inside your installed host:
 
 | Slash-command hosts | Natural-language hosts | Description |
 |---|---|---|
-| `/claude-to-im setup` | "claude-to-im setup" / "配置" | Interactive setup wizard |
-| `/claude-to-im start` | "start bridge" / "启动桥接" | Start the bridge daemon |
-| `/claude-to-im stop` | "stop bridge" / "停止桥接" | Stop the bridge daemon |
-| `/claude-to-im status` | "bridge status" / "状态" | Show daemon status |
-| `/claude-to-im logs` | "查看日志" | Show last 50 log lines |
-| `/claude-to-im logs 200` | "logs 200" | Show last 200 log lines |
-| `/claude-to-im reconfigure` | "reconfigure" / "修改配置" | Update config interactively |
-| `/claude-to-im doctor` | "doctor" / "诊断" | Diagnose issues |
+| `/codex-to-im setup` | "codex-to-im setup" / "配置" | Interactive setup wizard |
+| `/codex-to-im start` | "start bridge" / "启动桥接" | Start the bridge daemon |
+| `/codex-to-im stop` | "stop bridge" / "停止桥接" | Stop the bridge daemon |
+| `/codex-to-im status` | "bridge status" / "状态" | Show daemon status |
+| `/codex-to-im logs` | "查看日志" | Show last 50 log lines |
+| `/codex-to-im logs 200` | "logs 200" | Show last 200 log lines |
+| `/codex-to-im reconfigure` | "reconfigure" / "修改配置" | Update config interactively |
+| `/codex-to-im doctor` | "doctor" / "诊断" | Diagnose issues |
 
 The bridge also supports built-in session management commands inside IM chats:
 
@@ -190,6 +193,7 @@ The `setup` wizard provides inline guidance for every step. Here's a summary:
 ```
 ~/.<host>-to-im/
 ├── config.env             ← Credentials & settings (chmod 600)
+├── openai.local.env       ← Optional locally included secrets (chmod 600)
 ├── data/                  ← Persistent JSON storage
 │   ├── sessions.json
 │   ├── bindings.json
@@ -212,13 +216,15 @@ The `setup` wizard provides inline guidance for every step. Here's a summary:
 | `src/llm-provider.ts` | Claude Agent SDK `query()` → SSE stream |
 | `src/codex-provider.ts` | Codex SDK `runStreamed()` → SSE stream |
 | `src/sse-utils.ts` | Shared SSE formatting helper |
-| `src/permission-gateway.ts` | Async bridge: SDK `canUseTool` ↔ IM buttons |
+| `src/permission-gateway.ts` | Async bridge permission resolution and IM approval handoff |
 | `src/logger.ts` | Secret-redacted file logging with rotation |
 | `scripts/daemon.sh` | Process management (start/stop/status/logs) |
 | `scripts/doctor.sh` | Health checks |
 | `SKILL.md` | Host skill definition |
 
 ### Permission flow
+
+Claude runtime:
 
 ```
 1. The agent wants to use a tool (e.g., Edit file)
@@ -229,12 +235,22 @@ The `setup` wizard provides inline guidance for every step. Here's a summary:
 6. SDK continues tool execution → result streamed back to IM
 ```
 
+Codex runtime:
+
+```
+1. Bridge resolves Codex approval policy for the current turn
+2. If `approval_policy=on-request`, CodexProvider emits a synthetic permission_request before execution
+3. Bridge sends IM approval controls or `/perm allow|deny <id>` instructions
+4. User approves → Codex turn starts
+5. User denies or times out → Codex turn does not start
+```
+
 ## Troubleshooting
 
 Run diagnostics:
 
 ```
-/claude-to-im doctor
+/codex-to-im doctor
 ```
 
 This checks: Node.js version, config file existence and permissions, token validity (live API calls), log directory, PID file consistency, and recent errors.
@@ -250,7 +266,8 @@ See [references/troubleshooting.md](references/troubleshooting.md) for more deta
 
 ## Security
 
-- All credentials stored in `~/.claude-to-im/config.env` with `chmod 600`
+- All credentials stored in `~/.codex-to-im/config.env` with `chmod 600`
+- `config.env` can optionally include a local secrets file such as `~/.codex-to-im/openai.local.env`; the loader now resolves that include when reading config
 - Tokens are automatically redacted in all log output (pattern-based masking)
 - Allowed user/channel/guild lists restrict who can interact with the bot
 - The daemon is a local process with no inbound network listeners
