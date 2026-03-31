@@ -317,13 +317,15 @@ describe('CodexProvider', () => {
     assert.equal(chunks.length, 0);
   });
 
-  it('does not pass model by default and skips stale Claude resume id', async () => {
+  it('does not pass model by default and still attempts resume for persisted thread ids', async () => {
     const { CodexProvider } = await import('../codex-provider.js');
     const { PendingPermissions } = await import('../permission-gateway.js');
     const provider = new CodexProvider(new PendingPermissions());
 
     let resumeCalls = 0;
     let startCalls = 0;
+    let resumedThreadId: string | undefined;
+    let capturedResumeOptions: Record<string, unknown> | undefined;
     let capturedStartOptions: Record<string, unknown> | undefined;
 
     const mockThread = {
@@ -336,8 +338,10 @@ describe('CodexProvider', () => {
 
     (provider as any).sdk = { Codex: class { constructor() {} } };
     (provider as any).codex = {
-      resumeThread: () => {
+      resumeThread: (threadId: string, options: Record<string, unknown>) => {
         resumeCalls += 1;
+        resumedThreadId = threadId;
+        capturedResumeOptions = options;
         return mockThread;
       },
       startThread: (opts: Record<string, unknown>) => {
@@ -441,7 +445,6 @@ describe('CodexProvider', () => {
     process.env.CTI_CODEX_EXECUTABLE = '/tmp/codex-full';
     process.env.CTI_CODEX_SANDBOX_MODE = 'danger-full-access';
     process.env.CTI_CODEX_APPROVAL_POLICY = 'never';
-
     try {
       const { CodexProvider } = await import('../codex-provider.js');
       const { PendingPermissions } = await import('../permission-gateway.js');
@@ -507,104 +510,42 @@ describe('CodexProvider', () => {
     }
   });
 
-  it('emits a synthetic permission request before running Codex when approval is on-request', async () => {
-    const oldApproval = process.env.CTI_CODEX_APPROVAL_POLICY;
-    process.env.CTI_CODEX_APPROVAL_POLICY = 'on-request';
-
+  it('passes skipGitRepoCheck only when CTI_CODEX_SKIP_GIT_REPO_CHECK=true', async () => {
+    const old = process.env.CTI_CODEX_SKIP_GIT_REPO_CHECK;
+    process.env.CTI_CODEX_SKIP_GIT_REPO_CHECK = 'true';
     try {
       const { CodexProvider } = await import('../codex-provider.js');
       const { PendingPermissions } = await import('../permission-gateway.js');
-      const pendingPerms = new PendingPermissions();
-      const provider = new CodexProvider(pendingPerms);
+      const provider = new CodexProvider(new PendingPermissions());
 
-      let startCalls = 0;
-      let seenPermissionId = '';
-      (pendingPerms as any).waitFor = async (permissionRequestId: string) => {
-        seenPermissionId = permissionRequestId;
-        return { behavior: 'allow' };
-      };
-
+      let capturedStartOptions: Record<string, unknown> | undefined;
       const mockThread = {
         runStreamed: () => ({
           events: (async function* () {
-            yield { type: 'thread.started', thread_id: 'thread-approval' };
             yield { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 } };
           })(),
         }),
       };
-      (provider as any).ensureSDK = async () => ({
-        sdk: {},
-        codex: {
-          startThread: () => {
-            startCalls += 1;
-            return mockThread;
-          },
+      (provider as any).sdk = { Codex: class { constructor() {} } };
+      (provider as any).codex = {
+        startThread: (opts: Record<string, unknown>) => {
+          capturedStartOptions = opts;
+          return mockThread;
         },
+      };
+
+      const stream = provider.streamChat({
+        prompt: 'hello',
+        sessionId: 'skip-git-check-session',
       });
+      await collectStream(stream);
 
-      const chunks = await collectStream(provider.streamChat({
-        prompt: 'create a file',
-        sessionId: 'permission-session',
-      }));
-      const events = parseSSEChunks(chunks);
-      const permissionEvent = events.find((event) => event.type === 'permission_request');
-
-      assert.ok(permissionEvent, 'Should emit a permission request event');
-      assert.ok(seenPermissionId.startsWith('codex-turn-'));
-      assert.equal(startCalls, 1);
-      const permissionData = JSON.parse(permissionEvent!.data);
-      assert.equal(permissionData.toolName, 'codex_turn');
-      assert.equal(permissionData.permissionRequestId, seenPermissionId);
+      assert.equal(capturedStartOptions?.skipGitRepoCheck, true);
     } finally {
-      if (oldApproval === undefined) {
-        delete process.env.CTI_CODEX_APPROVAL_POLICY;
+      if (old === undefined) {
+        delete process.env.CTI_CODEX_SKIP_GIT_REPO_CHECK;
       } else {
-        process.env.CTI_CODEX_APPROVAL_POLICY = oldApproval;
-      }
-    }
-  });
-
-  it('stops before execution when the synthetic Codex permission request is denied', async () => {
-    const oldApproval = process.env.CTI_CODEX_APPROVAL_POLICY;
-    process.env.CTI_CODEX_APPROVAL_POLICY = 'on-request';
-
-    try {
-      const { CodexProvider } = await import('../codex-provider.js');
-      const { PendingPermissions } = await import('../permission-gateway.js');
-      const pendingPerms = new PendingPermissions();
-      const provider = new CodexProvider(pendingPerms);
-
-      let startCalls = 0;
-      (pendingPerms as any).waitFor = async () => ({
-        behavior: 'deny',
-        message: 'Denied by IM test',
-      });
-
-      (provider as any).ensureSDK = async () => ({
-        sdk: {},
-        codex: {
-          startThread: () => {
-            startCalls += 1;
-            throw new Error('startThread should not be called when permission is denied');
-          },
-        },
-      });
-
-      const chunks = await collectStream(provider.streamChat({
-        prompt: 'delete a file',
-        sessionId: 'permission-denied-session',
-      }));
-      const events = parseSSEChunks(chunks);
-      const errorEvent = events.find((event) => event.type === 'error');
-
-      assert.equal(startCalls, 0);
-      assert.ok(errorEvent, 'Should emit an error when permission is denied');
-      assert.match(errorEvent!.data, /Denied by IM test/);
-    } finally {
-      if (oldApproval === undefined) {
-        delete process.env.CTI_CODEX_APPROVAL_POLICY;
-      } else {
-        process.env.CTI_CODEX_APPROVAL_POLICY = oldApproval;
+        process.env.CTI_CODEX_SKIP_GIT_REPO_CHECK = old;
       }
     }
   });

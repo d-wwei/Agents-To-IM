@@ -238,14 +238,79 @@ These are the only two required fields for QQ.
 
 If you don't have the openid yet, leave this field empty. You can add it later via `reconfigure`.
 
-Enter comma-separated openids to restrict access. Leave empty to allow all users who can message the bot.
+---
 
-### Image Enabled (optional)
+## Weixin / 微信
 
-Default: `true`. Set to `false` if the underlying LLM provider does not support image input.
+> Risk note: this integration follows the same OpenClaw-style WeChat plugin protocol used by CodePilot. Because it connects a non-OpenClaw product to WeChat, there may be account risk. Use with caution.
 
-When enabled, images sent by users in QQ private chat will be forwarded to the AI agent. Image output (sending images back to QQ) is not supported in this version — only text replies.
+### QR login flow
 
-### Max Image Size MB (optional)
+Weixin does **not** use a static bot token in `config.env`.
 
-Default: `20`. Maximum image file size in MB that will be forwarded to the AI agent. Images larger than this limit are ignored.
+Instead, run the local QR helper from the installed skill directory:
+
+- Claude Code default install:
+
+```bash
+cd ~/.claude/skills/claude-to-im
+npm run weixin:login
+```
+
+- Codex default install:
+
+```bash
+cd ~/.codex/skills/Claude-to-IM-skill
+npm run weixin:login
+```
+
+If you are running from a checked-out repo instead of an installed skill, use that repo's `Claude-to-IM-skill` directory.
+
+What happens next:
+
+1. The helper requests a fresh WeChat QR code
+2. It writes a local HTML file to:
+   `~/.claude-to-im/runtime/weixin-login.html`
+3. It tries to open that HTML file in your default browser automatically
+4. You scan the QR code with the WeChat app and confirm on your phone
+5. On success, the helper stores the linked account in:
+   `~/.claude-to-im/data/weixin-accounts.json`
+
+The filename stays plural for backward compatibility, but Weixin currently runs in single-account mode.
+
+If the browser does not open automatically, open the HTML file manually.
+
+### Replacing the linked Weixin account
+
+Run the helper again:
+
+```bash
+cd <skill-dir>
+npm run weixin:login
+```
+
+Each successful scan replaces the previously linked Weixin account. Only the most recent account is kept locally and used by the bridge.
+
+### Optional config
+
+Most users should leave these unset:
+
+- `CTI_WEIXIN_BASE_URL`
+- `CTI_WEIXIN_CDN_BASE_URL`
+- `CTI_WEIXIN_MEDIA_ENABLED`
+
+Defaults:
+
+- Base URL: `https://ilinkai.weixin.qq.com`
+- CDN Base URL: `https://novac2c.cdn.weixin.qq.com/c2c`
+- Media: disabled by default in CLI setups; when enabled, inbound images/files/videos are downloaded and forwarded as attachments
+
+### Voice message behavior
+
+Weixin voice messages are handled differently from image/file/video media:
+
+- If WeChat includes built-in speech-to-text text in `voice_item.text`, the bridge forwards that text as the user message.
+- If WeChat does **not** include a transcript, the bridge returns a user-visible error asking the sender to enable WeChat voice transcription and resend.
+- The bridge does **not** download, decrypt, or transcribe raw voice audio on its own.
+
+This rule applies in both Claude Code and Codex runtimes.

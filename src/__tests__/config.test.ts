@@ -139,6 +139,20 @@ describe('configToSettings', () => {
     assert.equal(m.get('bridge_qq_max_image_size'), '10');
   });
 
+  it('maps weixin settings', () => {
+    const m = configToSettings({
+      ...base,
+      enabledChannels: ['weixin'],
+      weixinBaseUrl: 'https://example.weixin.test',
+      weixinCdnBaseUrl: 'https://cdn.weixin.test',
+      weixinMediaEnabled: true,
+    });
+    assert.equal(m.get('bridge_weixin_enabled'), 'true');
+    assert.equal(m.get('bridge_weixin_base_url'), 'https://example.weixin.test');
+    assert.equal(m.get('bridge_weixin_cdn_base_url'), 'https://cdn.weixin.test');
+    assert.equal(m.get('bridge_weixin_media_enabled'), 'true');
+  });
+
   it('omits qq image settings when not set', () => {
     const m = configToSettings({
       ...base,
@@ -219,6 +233,7 @@ describe('loadConfig/saveConfig round-trip', () => {
     assert.equal(m.get('bridge_discord_enabled'), 'false');
     assert.equal(m.get('bridge_feishu_enabled'), 'false');
     assert.equal(m.get('bridge_qq_enabled'), 'false');
+    assert.equal(m.get('bridge_weixin_enabled'), 'false');
   });
 
   it('preserves codex execution overrides when saving and loading config', async () => {

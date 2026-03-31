@@ -1,7 +1,7 @@
 ---
 name: link-to-im
 description: |
-  This skill bridges the current host coding agent to IM platforms (Telegram, Discord, Feishu/Lark, QQ).
+  This skill bridges the current host coding agent (Claude Code, Codex, or Gemini CLI) to IM platforms (Telegram, Discord, Feishu/Lark, QQ, or WeChat).
   Use for: setting up, starting, stopping, or diagnosing the IM bridge daemon;
   forwarding agent replies to a messaging app.
   Trigger on: "link-to-im", "start bridge", "stop bridge", "bridge status",
@@ -37,7 +37,7 @@ Parse the user's intent from `$ARGUMENTS` into one of these subcommands:
 
 | User says (examples) | Subcommand |
 |---|---|
-| `setup`, `configure`, `配置`, `我想在飞书上用 Link`, `帮我连接 Telegram` | setup |
+| `setup`, `configure`, `配置`, `我想在飞书上用 Link`, `帮我连接 Telegram`, `帮我接微信` | setup |
 | `start`, `start bridge`, `启动`, `启动桥接` | start |
 | `stop`, `stop bridge`, `停止`, `停止桥接` | stop |
 | `status`, `bridge status`, `状态`, `运行状态`, `怎么看桥接的运行状态` | status |
@@ -79,11 +79,12 @@ When AskUserQuestion IS available, collect input **one field at a time**. After 
 
 **Step 1 — Choose channels**
 
-Ask which channels to enable (telegram, discord, feishu, qq). Accept comma-separated input. Briefly describe each:
+Ask which channels to enable (telegram, discord, feishu, qq, weixin). Accept comma-separated input. Briefly describe each:
 - **telegram** — Best for personal use. Streaming preview, inline permission buttons.
 - **discord** — Good for team use. Server/channel/user-level access control.
 - **feishu** (Lark) — For Feishu/Lark teams. Streaming cards, tool progress, inline permission buttons.
 - **qq** — QQ C2C private chat only. No inline permission buttons, no streaming preview. Permissions use text `/perm ...` commands.
+- **weixin** — WeChat QR login. Single linked account only; a new login replaces the previous one. No inline permission buttons, no streaming preview. Permissions use text `/perm ...` commands or quick `1/2/3` replies. Voice messages only use WeChat's own speech-to-text text; raw voice audio is not transcribed by the bridge.
 
 **Step 2 — Collect tokens per channel**
 
@@ -104,6 +105,14 @@ For each enabled channel, collect one credential at a time. Tell the user where 
   4. Image Enabled (optional, default true, press Enter to skip) — if the underlying provider doesn't support image input, set to false
   5. Max Image Size MB (optional, default 20, press Enter to skip)
   - Remind user: QQ first version only supports C2C private chat sandbox access. No group/channel support, no inline buttons, no streaming preview.
+- **Weixin**: Do not ask for a static token. Instead:
+  1. Tell the user this channel uses QR login, not manual credential entry.
+  2. Run `cd SKILL_DIR && npm run weixin:login`
+  3. The helper writes `~/.claude-to-im/runtime/weixin-login.html` and tries to open it automatically in the local browser.
+  4. If auto-open fails, tell the user to open that HTML file manually and scan the QR code with WeChat.
+  5. Wait for the helper to report success, then confirm that the linked account was saved locally.
+  - Explain briefly: the linked Weixin account is stored in `~/.claude-to-im/data/weixin-accounts.json`. Running the helper again replaces the previously linked account.
+  - Explain briefly: `CTI_WEIXIN_MEDIA_ENABLED` only controls inbound image/file/video downloads. For voice messages, the bridge only accepts the text returned by WeChat's built-in speech-to-text. If WeChat does not provide a transcript, the bridge replies with an error instead of downloading/transcribing raw audio.
 
 **Step 3 — General settings**
 
@@ -124,7 +133,7 @@ Ask for runtime, default working directory, model, and mode:
 3. Use Bash to create directory structure: `mkdir -p ~/.link-to-im/{data,logs,runtime,data/messages}`
 4. Use Write to create `~/.link-to-im/config.env` with all settings in KEY=VALUE format
 5. Use Bash to set permissions: `chmod 600 ~/.link-to-im/config.env`
-6. Validate tokens — read `SKILL_DIR/references/token-validation.md` for the exact commands and expected responses for each platform. This catches typos and wrong credentials before the user tries to start the daemon.
+6. Validate tokens — read `SKILL_DIR/references/token-validation.md` for the exact commands and expected responses for each platform. This catches typos and wrong credentials before the user tries to start the daemon. For Weixin, a successful QR login already counts as validation.
 7. Report results with a summary table. If any validation fails, explain what might be wrong and how to fix it.
 8. On success, tell the user: "Setup complete! Run `/link-to-im start` to start the bridge."
 
@@ -161,6 +170,8 @@ Run: `bash "SKILL_DIR/scripts/daemon.sh" logs N`
 6. Re-validate any changed tokens
 7. Remind user: "Run `/link-to-im stop` then `/link-to-im start` to apply the changes."
 
+If the user wants to switch Weixin accounts during `reconfigure`, run `cd SKILL_DIR && npm run weixin:login` again. Each successful scan replaces the previously linked local account.
+
 ### `doctor`
 
 Run: `bash "SKILL_DIR/scripts/doctor.sh"`
@@ -169,6 +180,8 @@ Show results and suggest fixes for any failures. Common fixes:
 - SDK cli.js missing → `cd SKILL_DIR && npm install`
 - dist/daemon.mjs stale → `cd SKILL_DIR && npm run build`
 - Config missing → run `setup`
+- Weixin account missing / expired → `cd SKILL_DIR && npm run weixin:login`
+- Weixin voice message reports missing speech-to-text → enable WeChat's own voice transcription and resend; the bridge does not transcribe raw voice audio itself
 
 For more complex issues (messages not received, permission timeouts, high memory, stale PID files), read `SKILL_DIR/references/troubleshooting.md` for detailed diagnosis steps.
 

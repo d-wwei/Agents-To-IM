@@ -207,10 +207,6 @@ export function getStablePwd(): string {
   return os.homedir();
 }
 
-function looksLikeClaudeModel(model?: string): boolean {
-  return !!model && /^claude[-_]/i.test(model);
-}
-
 function shouldRetryFreshThread(message: string): boolean {
   const lower = message.toLowerCase();
   return (
@@ -368,17 +364,8 @@ export class CodexProvider implements LLMProvider {
             const { codex } = await self.ensureSDK();
 
             // Resolve or create thread
-            let savedThreadId = params.sdkSessionId
-              ? self.threadIds.get(params.sessionId) || params.sdkSessionId
-              : undefined;
-
-            // Cross-runtime migration safety:
-            // when a persisted Claude-model session leaks into Codex runtime,
-            // resuming it can fail immediately with model/session mismatch.
-            if (savedThreadId && looksLikeClaudeModel(params.model)) {
-              console.warn('[codex-provider] Ignoring stale Claude-like sdkSessionId in Codex runtime; starting fresh thread');
-              savedThreadId = undefined;
-            }
+            const inMemoryThreadId = self.threadIds.get(params.sessionId);
+            let savedThreadId = inMemoryThreadId || params.sdkSessionId || undefined;
 
             const approvalPolicy = toApprovalPolicy(params.permissionMode);
             const approvalPolicyOverride = getApprovalPolicyOverride();
