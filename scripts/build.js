@@ -21,6 +21,9 @@ await esbuild.build({
     'node:*',
   ],
   banner: { js: "import { createRequire as __esbuildCreateRequire } from 'module'; const require = __esbuildCreateRequire(import.meta.url);" },
+  // Keep symlinks unresolved so that the relative ../../../../.. paths in
+  // claude-to-im's bridge-manager resolve back into this skill's src/ dir.
+  preserveSymlinks: true,
 });
 
 console.log('Built dist/daemon.mjs');
