@@ -27,6 +27,23 @@ allowed-tools:
 You are managing the Link-to-IM bridge.
 User data is stored at `~/.link-to-im/`.
 
+## Preamble — update check
+
+Before processing any subcommand, run this silent check once per session:
+
+```bash
+_UPD=$("SKILL_DIR/node_modules/.bin/update-kit" quick-check --cwd "SKILL_DIR" --json 2>/dev/null || true)
+[ -n "$_UPD" ] && echo "$_UPD" || true
+```
+
+(Replace SKILL_DIR with the actual skill directory path resolved below.)
+
+- If output contains `"status":"upgrade_available"`: tell user "Link-to-IM v{candidateVersion} 可用（当前 v{currentVersion}）。要现在升级吗？" and offer to run `"SKILL_DIR/node_modules/.bin/update-kit" apply --cwd "SKILL_DIR" --decision update_once`.
+- If output contains `"status":"just_upgraded"`: tell user "已升级到最新版本！"
+- Otherwise: proceed silently.
+
+---
+
 First, locate the skill directory by finding this SKILL.md file:
 - Use Glob with pattern `**/skills/**/link-to-im/SKILL.md` to find its path, then derive the skill root directory from it.
 - Store that path mentally as SKILL_DIR for all subsequent file references.
@@ -184,6 +201,36 @@ Show results and suggest fixes for any failures. Common fixes:
 - Weixin voice message reports missing speech-to-text → enable WeChat's own voice transcription and resend; the bridge does not transcribe raw voice audio itself
 
 For more complex issues (messages not received, permission timeouts, high memory, stale PID files), read `SKILL_DIR/references/troubleshooting.md` for detailed diagnosis steps.
+
+#### Self-Healing Protocol (UDD)
+
+When `doctor` finds unresolved issues, or when an error occurs during bridge operation, use the UDD self-healing flow. **Always run UDD commands in a subagent** — never in the main agent context.
+
+1. **Check if upstream already fixed it:**
+   ```bash
+   cd "SKILL_DIR" && "SKILL_DIR/node_modules/.bin/udd" check --json
+   ```
+   If `upstreamFixMatch` is present with medium/high confidence, recommend update first.
+
+2. **Analyze the error:**
+   ```bash
+   cd "SKILL_DIR" && "SKILL_DIR/node_modules/.bin/udd" analyze --error "<error message>" --json
+   ```
+   Report the `diagnosis.kind` and suggested strategies.
+
+3. **If user approves repair:**
+   ```bash
+   cd "SKILL_DIR" && "SKILL_DIR/node_modules/.bin/udd" heal --error "<error message>" --decision repair_once --json
+   ```
+   This runs in an isolated git worktree. If verification passes, the fix is ready for review.
+
+4. **If repair fails, draft an issue:**
+   ```bash
+   cd "SKILL_DIR" && "SKILL_DIR/node_modules/.bin/udd" issue-draft --error "<error message>" --out ./issue-draft.md
+   ```
+   Present the draft to the user for review before submission.
+
+UDD rules: Never modify files outside SKILL_DIR. Never commit to main directly. If `udd.config.json` is missing, inform the user. Respect `.env` and paths in `protectedPaths`.
 
 **Feishu upgrade note:** If the user upgraded from an older version of this skill and Feishu is returning permission errors (e.g. streaming cards not working, typing indicators failing, permission buttons unresponsive), the root cause is almost certainly missing permissions or callbacks in the Feishu backend. Refer the user to the "Upgrading from a previous version" section in `SKILL_DIR/references/setup-guides.md` — they need to add new scopes (`cardkit:card:write`, `cardkit:card:read`, `im:message:update`, `im:message.reactions:read`, `im:message.reactions:write_only`), add the `card.action.trigger` callback, and re-publish the app. The upgrade requires two publish cycles because adding the callback needs an active WebSocket connection (bridge must be running).
 

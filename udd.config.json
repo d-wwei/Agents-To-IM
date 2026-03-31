@@ -1,0 +1,25 @@
+{
+  "$schemaVersion": 1,
+  "repo": "d-wwei/Claude-Codex-Gemini-to-IM",
+  "releaseChannel": "releases",
+  "currentVersionSource": {
+    "type": "package.json",
+    "path": "./package.json"
+  },
+  "github": {
+    "tokenEnv": "GITHUB_TOKEN"
+  },
+  "selfHealing": {
+    "enabled": true,
+    "strategyOrder": ["agent_patch", "upstream_update", "issue_only"],
+    "updateStrategyOrder": ["update-kit", "host-native", "manual"],
+    "workspaceMode": "git_worktree",
+    "approvalMode": "manual",
+    "maxAttempts": 2
+  },
+  "hooks": {
+    "verification": [{ "name": "test", "command": "npm test" }]
+  },
+  "state": { "path": ".udd/state.json" },
+  "audit": { "path": ".udd/audit.jsonl" }
+}

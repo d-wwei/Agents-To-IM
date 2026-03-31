@@ -18,7 +18,9 @@
     "qrcode": "^1.5.4"
   },
   "optionalDependencies": {
-    "@openai/codex-sdk": "^0.110.0"
+    "@openai/codex-sdk": "^0.110.0",
+    "udd-kit": "github:d-wwei/udd-kit",
+    "update-kit": "github:d-wwei/update-kit"
   },
   "devDependencies": {
     "@types/node": "^22",

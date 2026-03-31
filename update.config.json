@@ -1,0 +1,27 @@
+{
+  "$schemaVersion": 1,
+  "componentName": "claude-to-im-skill",
+  "repo": "d-wwei/Claude-Codex-Gemini-to-IM",
+  "releaseChannel": "releases",
+  "currentVersionSource": {
+    "type": "package.json",
+    "path": "./package.json"
+  },
+  "installStrategy": {
+    "type": "custom_command",
+    "command": ["bash", "-lc", "git pull && npm install && npm run build"],
+    "timeoutMs": 120000
+  },
+  "statePath": "./.update-kit/state.json",
+  "auditLogPath": "./.update-kit/audit.log",
+  "lockPath": "./.update-kit/update.lock",
+  "autoUpdatePolicy": "manual",
+  "github": {
+    "tokenEnv": "GITHUB_TOKEN"
+  },
+  "updateCheckEnabled": true,
+  "cache": {
+    "upToDateTtlMs": 3600000,
+    "upgradeAvailableTtlMs": 43200000
+  }
+}

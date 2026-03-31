@@ -491,6 +491,20 @@ else
   check "Log file exists (not yet created)" 0
 fi
 
+# ── Update check ──
+UPD_BIN="${SKILL_DIR}/node_modules/.bin/update-kit"
+if [ -x "$UPD_BIN" ]; then
+  UPD_JSON=$("$UPD_BIN" quick-check --cwd "$SKILL_DIR" --json 2>/dev/null || true)
+  if echo "$UPD_JSON" | grep -q '"upgrade_available"'; then
+    CANDIDATE=$(echo "$UPD_JSON" | grep -o '"candidateVersion":"[^"]*"' | cut -d'"' -f4)
+    check "Update available: v${CANDIDATE}. Run: update-kit apply --cwd $SKILL_DIR" 1
+  else
+    check "Skill is up to date" 0
+  fi
+else
+  echo "  [info] update-kit not installed — skipping update check"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [ -n "${LATEST_DIAG:-}" ]; then
