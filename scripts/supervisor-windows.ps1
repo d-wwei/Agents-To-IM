@@ -260,6 +260,20 @@ function Start-Fallback {
         Write-Host "  Warning: smoke test failed: $_"
     }
 
+    # ── Load spawn-fix.cjs preload for Windows .cmd compatibility ──
+    # The SDK uses raw child_process.spawn() which cannot execute .cmd files.
+    # This preload monkey-patches spawn to detect .cmd shims and invoke the
+    # underlying .js script via node.exe directly.
+    $spawnFix = Join-Path (Join-Path $SkillDir 'scripts') 'spawn-fix.cjs'
+    if (Test-Path $spawnFix) {
+        $existing = [System.Environment]::GetEnvironmentVariable('NODE_OPTIONS')
+        $requireFlag = "--require `"$spawnFix`""
+        if (-not $existing -or $existing -notlike "*spawn-fix*") {
+            $newVal = if ($existing) { "$existing $requireFlag" } else { $requireFlag }
+            [System.Environment]::SetEnvironmentVariable('NODE_OPTIONS', $newVal)
+        }
+    }
+
     # ── Start the process ──
     # Do NOT redirect stdout — daemon.mjs's setupLogger() writes to bridge.log
     # via its own fs.createWriteStream. Only capture stderr to a separate file

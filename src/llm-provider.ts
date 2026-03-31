@@ -16,6 +16,7 @@ import type { LLMProvider, StreamChatParams, FileAttachment } from 'claude-to-im
 import type { PendingPermissions } from './permission-gateway.js';
 
 import { sseEvent } from './sse-utils.js';
+import { normalizeMsysPath } from './config.js';
 
 const nodeRequire = createRequire(import.meta.url);
 // ── Environment isolation ──
@@ -684,10 +685,16 @@ export class SDKLLMProvider implements LLMProvider {
   private deferredSessions = new Map<string, { workingDirectory?: string }>();
   private activeControllers = new Map<string, ReadableStreamDefaultController<string>>();
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private poolDisabled = false;
 
   constructor(private pendingPerms: PendingPermissions, cliPath?: string, autoApprove = false) {
     this.cliPath = cliPath;
     this.autoApprove = autoApprove;
+  }
+
+  /** Disable V2 session pooling entirely (force V1-only). */
+  disablePool(): void {
+    this.poolDisabled = true;
   }
 
   // ── V2 Session Pool Management ──
@@ -745,7 +752,7 @@ export class SDKLLMProvider implements LLMProvider {
     // synchronous inside the constructor so this is safe.
     const savedCwd = process.cwd();
     if (workingDirectory) {
-      try { process.chdir(workingDirectory); } catch { /* ignore invalid dir */ }
+      try { process.chdir(normalizeMsysPath(workingDirectory)); } catch { /* ignore invalid dir */ }
     }
 
     let session: SDKSession;
@@ -960,6 +967,7 @@ export class SDKLLMProvider implements LLMProvider {
 
               // Defer V2 session creation — don't spawn now, create lazily on next message
               if (
+                !self.poolDisabled &&
                 msg.type === 'result' &&
                 msg.subtype === 'success' &&
                 msg.session_id &&

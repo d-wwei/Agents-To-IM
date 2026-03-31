@@ -158,8 +158,13 @@ async function main(): Promise<void> {
 
   // Start V2 session pool cleanup loop if using Claude SDK
   if (rawProvider instanceof SDKLLMProvider) {
-    rawProvider.startCleanupLoop();
-    console.log(`[${LOG_PREFIX}] V2 session pool cleanup loop started`);
+    if (config.disableSessionPool) {
+      rawProvider.disablePool();
+      console.log(`[${LOG_PREFIX}] V2 session pool disabled (CTI_DISABLE_SESSION_POOL or Windows default)`);
+    } else {
+      rawProvider.startCleanupLoop();
+      console.log(`[${LOG_PREFIX}] V2 session pool cleanup loop started`);
+    }
   }
 
   const gateway = {

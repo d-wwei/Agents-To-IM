@@ -47,6 +47,9 @@ export interface Config {
   weixinMediaEnabled?: boolean;
   // Auto-approve all tool permission requests without user confirmation
   autoApprove?: boolean;
+  // Disable V2 session pooling (force V1-only mode).
+  // Defaults to true on Windows where cross-process session resume is unreliable.
+  disableSessionPool?: boolean;
 }
 
 export const HOST_PROFILE = getHostProfile(import.meta.url);
@@ -131,6 +134,18 @@ function loadEnvFile(filePath: string, seen = new Set<string>()): Map<string, st
 }
 
 /**
+ * Convert MSYS/Git-Bash/Cygwin-style paths to native Windows paths.
+ * /c/Users/foo  ->  C:\Users\foo
+ * On non-Windows or non-matching input, returns the path unchanged.
+ */
+export function normalizeMsysPath(p: string): string {
+  if (process.platform !== 'win32') return p;
+  const m = p.match(/^\/([a-zA-Z])\/(.*)/);
+  if (m) return m[1].toUpperCase() + ':' + path.sep + m[2].split('/').join(path.sep);
+  return p;
+}
+
+/**
  * Expand the only supported shell-style placeholders used in config.env:
  * $HOME and $CWD (including ${HOME} / ${CWD} forms).
  */
@@ -138,8 +153,8 @@ export function expandShellVars(value: string): string {
   return value
     .replace(/\$\{HOME\}/g, os.homedir())
     .replace(/\$HOME/g, os.homedir())
-    .replace(/\$\{CWD\}/g, process.cwd())
-    .replace(/\$CWD/g, process.cwd());
+    .replace(/\$\{CWD\}/g, normalizeMsysPath(process.cwd()))
+    .replace(/\$CWD/g, normalizeMsysPath(process.cwd()));
 }
 
 function splitCsv(value: string | undefined): string[] | undefined {
@@ -163,7 +178,7 @@ export function loadConfig(): Config {
   return {
     runtime,
     enabledChannels: splitCsv(env.get("CTI_ENABLED_CHANNELS")) ?? [],
-    defaultWorkDir: expandShellVars(env.get("CTI_DEFAULT_WORKDIR") || process.cwd()),
+    defaultWorkDir: normalizeMsysPath(expandShellVars(env.get("CTI_DEFAULT_WORKDIR") || process.cwd())),
     defaultModel: env.get("CTI_DEFAULT_MODEL") || undefined,
     defaultMode: env.get("CTI_DEFAULT_MODE") || "code",
     codexSkipGitRepoCheck: env.get("CTI_CODEX_SKIP_GIT_REPO_CHECK") !== "false",
@@ -206,6 +221,9 @@ export function loadConfig(): Config {
       ? env.get("CTI_WEIXIN_MEDIA_ENABLED") === "true"
       : undefined,
     autoApprove: env.get("CTI_AUTO_APPROVE") === "true",
+    disableSessionPool: env.has("CTI_DISABLE_SESSION_POOL")
+      ? env.get("CTI_DISABLE_SESSION_POOL") === "true"
+      : process.platform === 'win32',  // default: disabled on Windows
   };
 }
 
