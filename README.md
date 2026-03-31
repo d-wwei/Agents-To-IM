@@ -46,7 +46,7 @@ Choose the section that matches the AI agent product you actually use.
 #### Recommended: `npx skills`
 
 ```bash
-npx skills add d-wwei/Claude-Codex-Gemini-to-IM
+npx skills add d-wwei/Agents-To-IM
 ```
 
 After installation, tell Claude Code:
@@ -64,7 +64,7 @@ If you want WeChat specifically, you can also say:
 #### Alternative: clone directly into Claude Code skills
 
 ```bash
-git clone https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git ~/.codex/skills/codex-to-im
+git clone https://github.com/d-wwei/Agents-To-IM.git ~/.codex/skills/codex-to-im
 ```
 
 Clones the repo directly into the selected host skills directory. Claude Code discovers it automatically.
@@ -72,7 +72,7 @@ Clones the repo directly into the selected host skills directory. Claude Code di
 #### Alternative: symlink for development
 
 ```bash
-git clone https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git ~/code/Claude-to-IM-skill
+git clone https://github.com/d-wwei/Agents-To-IM.git ~/code/Claude-to-IM-skill
 mkdir -p ~/.codex/skills
 ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
 ```
@@ -82,7 +82,7 @@ ln -s ~/code/Claude-to-IM-skill ~/.codex/skills/codex-to-im
 #### Recommended: use the Codex install script
 
 ```bash
-git clone https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git ~/code/Claude-to-IM-skill
+git clone https://github.com/d-wwei/Agents-To-IM.git ~/code/Claude-to-IM-skill
 bash ~/code/Claude-to-IM-skill/scripts/install-codex.sh
 ```
 
@@ -109,7 +109,7 @@ If you want WeChat specifically, you can also say:
 #### Alternative: clone directly into Codex skills
 
 ```bash
-git clone https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git ~/.codex/skills/codex-to-im
+git clone https://github.com/d-wwei/Agents-To-IM.git ~/.codex/skills/codex-to-im
 cd ~/.codex/skills/codex-to-im
 npm install
 npm run build
@@ -146,7 +146,7 @@ Choose the update flow that matches both your AI agent product and your installa
 If you installed with `npx skills`, re-run:
 
 ```bash
-npx skills add d-wwei/Claude-Codex-Gemini-to-IM
+npx skills add d-wwei/Agents-To-IM
 ```
 
 If you installed via `git clone` or symlink:

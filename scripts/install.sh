@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # install.sh — One-line installer for claude-to-im
-# Usage: curl -fsSL https://raw.githubusercontent.com/d-wwei/Claude-Codex-Gemini-to-IM/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/d-wwei/Agents-To-IM/main/scripts/install.sh | bash
 
 set -euo pipefail
 
-REPO_URL="https://github.com/d-wwei/Claude-Codex-Gemini-to-IM.git"
+REPO_URL="https://github.com/d-wwei/Agents-To-IM.git"
 INSTALL_DIR="${HOME}/.claude/skills/claude-to-im"
 MIN_NODE_MAJOR=20
 

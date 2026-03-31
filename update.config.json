@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
   "componentName": "claude-to-im-skill",
-  "repo": "d-wwei/Claude-Codex-Gemini-to-IM",
+  "repo": "d-wwei/Agents-To-IM",
   "releaseChannel": "releases",
   "currentVersionSource": {
     "type": "package.json",

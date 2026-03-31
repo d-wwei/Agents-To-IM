@@ -1,6 +1,6 @@
 {
   "$schemaVersion": 1,
-  "repo": "d-wwei/Claude-Codex-Gemini-to-IM",
+  "repo": "d-wwei/Agents-To-IM",
   "releaseChannel": "releases",
   "currentVersionSource": {
     "type": "package.json",
