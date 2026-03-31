@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function parseArgs(argv) {
   const out = {};
@@ -237,7 +238,7 @@ function renderFile(templatePath, outputPath, variables) {
 }
 
 const { host, target, templates, repoHome } = parseArgs(process.argv);
-const templateDir = templates || path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'templates');
+const templateDir = templates || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates');
 
 if (repoHome) {
   renderFile(path.join(templateDir, 'README.repo.md.tmpl'), path.join(target, 'README.md'), {});

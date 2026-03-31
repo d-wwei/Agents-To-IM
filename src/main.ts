@@ -22,7 +22,7 @@ import { SDKLLMProvider, resolveClaudeCliPath, resolveGeminiCliPath, preflightCh
 import { GeminiProvider } from './gemini-provider.js';
 import { PendingPermissions } from './permission-gateway.js';
 import { RetryingLLMProvider } from './retry-provider.js';
-import { setupLogger } from './logger.js';
+import { setupLogger, logSync } from './logger.js';
 
 const RUNTIME_DIR = path.join(CTI_HOME, 'runtime');
 const STATUS_FILE = path.join(RUNTIME_DIR, 'status.json');
@@ -42,10 +42,10 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
   if (runtime === 'gemini') {
     const cliPath = resolveGeminiCliPath();
     if (!cliPath) {
-      console.error(
-        `[${LOG_PREFIX}] FATAL: Cannot find the \`gemini\` CLI executable.\n` +
-        '  Fix: Install Gemini CLI or set CTI_GEMINI_EXECUTABLE=/path/to/gemini',
-      );
+      const msg = `[${LOG_PREFIX}] FATAL: Cannot find the \`gemini\` CLI executable.\n` +
+        '  Fix: Install Gemini CLI or set CTI_GEMINI_EXECUTABLE=/path/to/gemini';
+      logSync('ERROR', msg);
+      console.error(msg);
       process.exit(1);
     }
     console.log(`[${LOG_PREFIX}] Using Gemini CLI: ${cliPath}`);
@@ -88,12 +88,12 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
   const cliPath = resolveClaudeCliPath();
 
   if (!cliPath) {
-    console.error(
-      `[${LOG_PREFIX}] FATAL: Cannot find the \`claude\` CLI executable.\n` +
+    const msg = `[${LOG_PREFIX}] FATAL: Cannot find the \`claude\` CLI executable.\n` +
       '  Tried: CTI_CLAUDE_CODE_EXECUTABLE env, /usr/local/bin/claude, /opt/homebrew/bin/claude, ~/.npm-global/bin/claude, ~/.local/bin/claude\n' +
       '  Fix: Install Claude Code CLI (https://docs.anthropic.com/en/docs/claude-code) or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/claude\n' +
-      '  Or: Set CTI_RUNTIME=codex to use Codex instead',
-    );
+      '  Or: Set CTI_RUNTIME=codex to use Codex instead';
+    logSync('ERROR', msg);
+    console.error(msg);
     process.exit(1);
   }
   // Preflight: verify the CLI can actually run in the daemon environment.
@@ -103,15 +103,15 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
   if (check.ok) {
     console.log(`[${LOG_PREFIX}] CLI preflight OK: ${cliPath} (${check.version})`);
   } else {
-    console.error(
-      `[${LOG_PREFIX}] FATAL: Claude CLI preflight check failed.\n` +
+    const msg = `[${LOG_PREFIX}] FATAL: Claude CLI preflight check failed.\n` +
       `  Path: ${cliPath}\n` +
       `  Error: ${check.error}\n` +
       `  Fix:\n` +
       `    1. Install Claude Code CLI >= 2.x: https://docs.anthropic.com/en/docs/claude-code\n` +
       `    2. Or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/correct/claude\n` +
-      `    3. Or set CTI_RUNTIME=auto to fall back to Codex`,
-    );
+      `    3. Or set CTI_RUNTIME=auto to fall back to Codex`;
+    logSync('ERROR', msg);
+    console.error(msg);
     process.exit(1);
   }
   return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);

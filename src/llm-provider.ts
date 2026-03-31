@@ -266,6 +266,11 @@ function isExecutable(p: string): boolean {
     fs.accessSync(p, fs.constants.X_OK);
     return true;
   } catch {
+    // On Windows, .cmd/.bat shims may not have X_OK. Fall back to existence check
+    // for common Windows script extensions used by npm global installs.
+    if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(p)) {
+      try { fs.accessSync(p, fs.constants.R_OK); return true; } catch { return false; }
+    }
     return false;
   }
 }
@@ -309,7 +314,13 @@ function sdkCliFallback(): string | undefined {
  */
 function canSpawn(binaryPath: string): boolean {
   try {
-    execFileSync(binaryPath, ['--version'], { timeout: 3000, stdio: 'ignore' });
+    // On Windows, .cmd/.bat files cannot be spawned directly by execFileSync;
+    // they require a shell. Use execSync with quoted path instead.
+    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(binaryPath)) {
+      execSync(`"${binaryPath}" --version`, { timeout: 3000, stdio: 'ignore' });
+    } else {
+      execFileSync(binaryPath, ['--version'], { timeout: 3000, stdio: 'ignore' });
+    }
     return true;
   } catch {
     return false;

@@ -27,6 +27,20 @@ const MAX_ROTATED = 3;
 
 let logStream: fs.WriteStream | null = null;
 
+/**
+ * Synchronously write a message to the log file.
+ * Used for fatal errors where process.exit() follows immediately
+ * and the async WriteStream would not have time to flush.
+ */
+export function logSync(level: string, message: string): void {
+  const timestamp = new Date().toISOString();
+  const formatted = `[${timestamp}] [${level}] ${message}`;
+  const masked = maskSecrets(formatted);
+  try {
+    fs.appendFileSync(LOG_PATH, masked + '\n');
+  } catch { /* best effort */ }
+}
+
 function openLogStream(): fs.WriteStream {
   return fs.createWriteStream(LOG_PATH, { flags: 'a' });
 }

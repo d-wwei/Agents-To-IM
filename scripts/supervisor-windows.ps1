@@ -28,6 +28,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ── Paths ──
+# NOTE: Join-Path is called with exactly 2 arguments for PowerShell 5.1 compatibility.
 $SkillDir   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $hostName   = if ($env:CTI_HOST) { $env:CTI_HOST.ToLower() } elseif ((Split-Path $SkillDir -Leaf) -match '^(.*)-to-im$') { $matches[1].ToLower() } else { 'claude' }
 $skillCommand = if ($env:CTI_SKILL_COMMAND) { $env:CTI_SKILL_COMMAND } else { "$hostName-to-im" }
@@ -35,8 +36,8 @@ $CtiHome    = if ($env:CTI_HOME) { $env:CTI_HOME } else { Join-Path $env:USERPRO
 $RuntimeDir = Join-Path $CtiHome 'runtime'
 $PidFile    = Join-Path $RuntimeDir 'bridge.pid'
 $StatusFile = Join-Path $RuntimeDir 'status.json'
-$LogFile    = Join-Path $CtiHome 'logs' 'bridge.log'
-$DaemonMjs  = Join-Path $SkillDir 'dist' 'daemon.mjs'
+$LogFile    = Join-Path (Join-Path $CtiHome 'logs') 'bridge.log'
+$DaemonMjs  = Join-Path (Join-Path $SkillDir 'dist') 'daemon.mjs'
 
 $ServiceName = if ($hostName -split '[-_]' | Measure-Object | Select-Object -ExpandProperty Count) {
   (($hostName -split '[-_]') | ForEach-Object { if ($_) { $_.Substring(0,1).ToUpper() + $_.Substring(1) } }) -join '' + 'ToIMBridge'
@@ -77,10 +78,12 @@ function Read-Pid {
     return $null
 }
 
+# NOTE: Parameter renamed from $Pid to $ProcessId because $PID is a
+# read-only automatic variable in PowerShell (current process ID).
 function Test-PidAlive {
-    param([string]$Pid)
-    if (-not $Pid) { return $false }
-    try { $null = Get-Process -Id ([int]$Pid) -ErrorAction Stop; return $true }
+    param([string]$ProcessId)
+    if (-not $ProcessId) { return $false }
+    try { $null = Get-Process -Id ([int]$ProcessId) -ErrorAction Stop; return $true }
     catch { return $false }
 }
 
@@ -261,7 +264,7 @@ function Start-Fallback {
     # Do NOT redirect stdout — daemon.mjs's setupLogger() writes to bridge.log
     # via its own fs.createWriteStream. Only capture stderr to a separate file
     # for crash diagnostics that happen before the logger initialises.
-    $stderrLog = Join-Path $CtiHome 'logs' 'bridge-err.log'
+    $stderrLog = Join-Path (Join-Path $CtiHome 'logs') 'bridge-err.log'
     $proc = Start-Process -FilePath $nodePath `
         -ArgumentList $DaemonMjs `
         -WorkingDirectory $SkillDir `
@@ -307,7 +310,7 @@ switch ($Command) {
             }
         } else {
             Write-Host "Starting bridge (background process)..."
-            $pid = Start-Fallback
+            $bridgePid = Start-Fallback
             Start-Sleep -Seconds 3
 
             $newPid = Read-Pid
@@ -334,10 +337,10 @@ switch ($Command) {
             Write-Host "Bridge stopped"
             if (Test-Path $PidFile) { Remove-Item $PidFile -Force }
         } else {
-            $pid = Read-Pid
-            if (-not $pid) { Write-Host "No bridge running"; exit 0 }
-            if (Test-PidAlive $pid) {
-                Stop-Process -Id ([int]$pid) -Force
+            $bridgePid = Read-Pid
+            if (-not $bridgePid) { Write-Host "No bridge running"; exit 0 }
+            if (Test-PidAlive $bridgePid) {
+                Stop-Process -Id ([int]$bridgePid) -Force
                 Write-Host "Bridge stopped"
             } else {
                 Write-Host "Bridge was not running (stale PID file)"
@@ -347,7 +350,7 @@ switch ($Command) {
     }
 
     'status' {
-        $pid = Read-Pid
+        $bridgePid = Read-Pid
 
         # Check Windows Service
         $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -355,8 +358,8 @@ switch ($Command) {
             Write-Host "Windows Service '$ServiceName': $($svc.Status)"
         }
 
-        if ($pid -and (Test-PidAlive $pid)) {
-            Write-Host "Bridge process is running (PID: $pid)"
+        if ($bridgePid -and (Test-PidAlive $bridgePid)) {
+            Write-Host "Bridge process is running (PID: $bridgePid)"
             if (Test-StatusRunning) {
                 Write-Host "Bridge status: running"
             } else {
@@ -372,8 +375,9 @@ switch ($Command) {
 
     'logs' {
         if (Test-Path $LogFile) {
+            # Use double-quoted string with backtick-escaped quotes for PS 5.1 compat
             Get-Content $LogFile -Tail $LogLines | ForEach-Object {
-                $_ -replace '(token|secret|password)(["'']?\s*[:=]\s*["'']?)[^\s"]+', '$1$2*****'
+                $_ -replace "(token|secret|password)([`"']?\s*[:=]\s*[`"']?)[^\s`"]+", '$1$2*****'
             }
         } else {
             Write-Host "No log file found at $LogFile"
