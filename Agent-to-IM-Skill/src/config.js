@@ -167,6 +167,10 @@ export function loadConfig() {
 function formatEnvLine(key, value) {
     if (value === undefined || value === "")
         return "";
+    if (/[\s"'\\$`!#&|;()<>]/.test(value)) {
+        const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return `${key}="${escaped}"\n`;
+    }
     return `${key}=${value}\n`;
 }
 export function saveConfig(config) {

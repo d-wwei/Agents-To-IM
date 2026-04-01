@@ -25,7 +25,7 @@ import { getBridgeContext } from '../context';
 import {
   buildDiscordSlashCommandText,
   DISCORD_SLASH_COMMANDS,
-} from '../../../../../../src/discord-command-support.js';
+} from '../discord-command-support.js';
 
 /** Max number of message IDs to keep for dedup. */
 const DEDUP_MAX = 1000;

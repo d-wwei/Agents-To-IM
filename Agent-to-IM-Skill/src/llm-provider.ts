@@ -166,7 +166,11 @@ export function parseCliMajorVersion(versionOutput: string): number | undefined 
  */
 function getCliVersion(cliPath: string, env?: Record<string, string>): string | undefined {
   try {
-    return execSync(`"${cliPath}" --version`, {
+    // On Windows, .js/.mjs files can't be executed directly via shell — prepend node.
+    const cmd = (process.platform === 'win32' && /\.(js|mjs)$/i.test(cliPath))
+      ? `"${process.execPath}" "${cliPath}" --version`
+      : `"${cliPath}" --version`;
+    return execSync(cmd, {
       encoding: 'utf-8',
       timeout: 10_000,
       env: env || buildSubprocessEnv(),
@@ -190,7 +194,10 @@ const REQUIRED_CLI_FLAGS = ['output-format', 'input-format', 'permission-mode', 
 function checkRequiredFlags(cliPath: string, env?: Record<string, string>): string[] {
   let helpText: string;
   try {
-    helpText = execSync(`"${cliPath}" --help`, {
+    const cmd = (process.platform === 'win32' && /\.(js|mjs)$/i.test(cliPath))
+      ? `"${process.execPath}" "${cliPath}" --help`
+      : `"${cliPath}" --help`;
+    helpText = execSync(cmd, {
       encoding: 'utf-8',
       timeout: 10_000,
       env: env || buildSubprocessEnv(),
@@ -267,9 +274,9 @@ function isExecutable(p: string): boolean {
     fs.accessSync(p, fs.constants.X_OK);
     return true;
   } catch {
-    // On Windows, .cmd/.bat shims may not have X_OK. Fall back to existence check
+    // On Windows, .cmd/.bat/.js shims may not have X_OK. Fall back to existence check
     // for common Windows script extensions used by npm global installs.
-    if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(p)) {
+    if (process.platform === 'win32' && /\.(cmd|bat|ps1|js|mjs)$/i.test(p)) {
       try { fs.accessSync(p, fs.constants.R_OK); return true; } catch { return false; }
     }
     return false;
@@ -315,9 +322,12 @@ function sdkCliFallback(): string | undefined {
  */
 function canSpawn(binaryPath: string): boolean {
   try {
-    // On Windows, .cmd/.bat files cannot be spawned directly by execFileSync;
-    // they require a shell. Use execSync with quoted path instead.
-    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(binaryPath)) {
+    if (process.platform === 'win32' && /\.(js|mjs)$/i.test(binaryPath)) {
+      // .js/.mjs files need node to execute them
+      execFileSync(process.execPath, [binaryPath, '--version'], { timeout: 3000, stdio: 'ignore' });
+    } else if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(binaryPath)) {
+      // .cmd/.bat files cannot be spawned directly by execFileSync;
+      // they require a shell. Use execSync with quoted path instead.
       execSync(`"${binaryPath}" --version`, { timeout: 3000, stdio: 'ignore' });
     } else {
       execFileSync(binaryPath, ['--version'], { timeout: 3000, stdio: 'ignore' });

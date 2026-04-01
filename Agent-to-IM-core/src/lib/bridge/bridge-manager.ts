@@ -20,9 +20,7 @@ import { markdownToTelegramChunks } from './markdown/telegram';
 import { markdownToDiscordChunks } from './markdown/discord';
 import { getBridgeContext } from './context';
 import { escapeHtml } from './adapters/telegram-utils';
-import { tryHandleSessionManagementCommand } from '../../../../../src/session-command-support.js';
-import { prepareVoiceReply, wantsVoiceReply, type GeneratedVoiceReply } from '../../../../../src/voice-reply.js';
-import { writeTaskDiagnosticSnapshot } from '../../../../../src/diagnostics.js';
+import { getBridgeExtensions, type GeneratedVoiceReply } from './extensions.js';
 import {
   validateWorkingDirectory,
   validateSessionId,
@@ -638,7 +636,7 @@ async function executeBoundTask(
     const session = store.getSession(binding.codepilotSessionId);
     const sessionMeta = taskStore?.getSessionMeta?.(binding.codepilotSessionId) || null;
     const { messages } = store.getMessages(binding.codepilotSessionId, { limit: 6 });
-    const filePath = writeTaskDiagnosticSnapshot({
+    const filePath = getBridgeExtensions().writeTaskDiagnosticSnapshot?.({
       reason,
       sessionId: binding.codepilotSessionId,
       channelType: adapter.channelType,
@@ -742,33 +740,35 @@ async function executeBoundTask(
         endInFlightUi();
         await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
       }
-      if (wantsVoiceReply(input.rawText)) {
-        const voiceReply = await prepareVoiceReply(result.responseText);
-        console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);
-        if (voiceReply.status === 'needs_config' || voiceReply.status === 'error') {
-          await deliver(adapter, {
-            address: msg.address,
-            text: voiceReply.noteText,
-            parseMode: 'plain',
-          }, { sessionId: binding.codepilotSessionId });
-        } else if (voiceReply.status === 'ready') {
-          const voiceAdapter = adapter as VoiceReplyCapableAdapter;
-          if (voiceAdapter.sendFileAttachment) {
-            const audioSend = await voiceAdapter.sendFileAttachment(msg.address.chatId, voiceReply.attachment);
-            console.log('[bridge-manager] Voice reply attachment send result:', audioSend.ok ? 'ok' : (audioSend.error || 'error'));
-            if (!audioSend.ok && audioSend.error) {
+      if (getBridgeExtensions().wantsVoiceReply?.(input.rawText)) {
+        const voiceReply = await getBridgeExtensions().prepareVoiceReply?.(result.responseText);
+        if (voiceReply) {
+          console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);
+          if (voiceReply.status === 'needs_config' || voiceReply.status === 'error') {
+            await deliver(adapter, {
+              address: msg.address,
+              text: voiceReply.noteText,
+              parseMode: 'plain',
+            }, { sessionId: binding.codepilotSessionId });
+          } else if (voiceReply.status === 'ready') {
+            const voiceAdapter = adapter as VoiceReplyCapableAdapter;
+            if (voiceAdapter.sendFileAttachment) {
+              const audioSend = await voiceAdapter.sendFileAttachment(msg.address.chatId, voiceReply.attachment);
+              console.log('[bridge-manager] Voice reply attachment send result:', audioSend.ok ? 'ok' : (audioSend.error || 'error'));
+              if (!audioSend.ok && audioSend.error) {
+                await deliver(adapter, {
+                  address: msg.address,
+                  text: `语音回复生成成功，但发送失败：${audioSend.error}`,
+                  parseMode: 'plain',
+                }, { sessionId: binding.codepilotSessionId });
+              }
+            } else {
               await deliver(adapter, {
                 address: msg.address,
-                text: `语音回复生成成功，但发送失败：${audioSend.error}`,
+                text: '当前频道暂不支持桥接层语音附件回传。请继续使用文字回复，或改在支持附件发送的频道中使用。',
                 parseMode: 'plain',
               }, { sessionId: binding.codepilotSessionId });
             }
-          } else {
-            await deliver(adapter, {
-              address: msg.address,
-              text: '当前频道暂不支持桥接层语音附件回传。请继续使用文字回复，或改在支持附件发送的频道中使用。',
-              parseMode: 'plain',
-            }, { sessionId: binding.codepilotSessionId });
           }
         }
       }
@@ -885,7 +885,7 @@ async function handleMessage(
 
   const rawText = msg.text.trim();
   const hasAttachments = msg.attachments && msg.attachments.length > 0;
-  const voiceReplyRequested = wantsVoiceReply(rawText);
+  const voiceReplyRequested = getBridgeExtensions().wantsVoiceReply?.(rawText) ?? false;
   if (voiceReplyRequested) {
     console.log('[bridge-manager] Voice reply requested for chat:', msg.address.chatId);
   }
@@ -966,11 +966,11 @@ async function handleCommand(
 
   let response = '';
 
-  const customCommandResponse = await tryHandleSessionManagementCommand({
+  const customCommandResponse = await getBridgeExtensions().tryHandleSessionManagementCommand?.({
     command,
     args,
     address: msg.address,
-  });
+  }) ?? null;
   if (customCommandResponse !== null) {
     response = customCommandResponse;
   }

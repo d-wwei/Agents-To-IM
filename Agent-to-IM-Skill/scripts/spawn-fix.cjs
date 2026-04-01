@@ -63,6 +63,12 @@ function isCmdOrBat(file) {
   return lower.endsWith('.cmd') || lower.endsWith('.bat');
 }
 
+function isJsFile(file) {
+  if (typeof file !== 'string') return false;
+  const lower = file.toLowerCase();
+  return lower.endsWith('.js') || lower.endsWith('.mjs');
+}
+
 function fixCwd(options) {
   if (options && options.cwd) {
     return { ...options, cwd: toWinPath(options.cwd) };
@@ -80,6 +86,9 @@ cp.spawn = function patchedSpawn(command, args, options) {
       return origSpawn.call(this, process.execPath, [script, ...(args || [])], fixCwd(options));
     }
   }
+  if (isJsFile(command)) {
+    return origSpawn.call(this, process.execPath, [command, ...(args || [])], fixCwd(options));
+  }
   return origSpawn.call(this, command, args, fixCwd(options));
 };
 
@@ -92,6 +101,9 @@ cp.execFileSync = function patchedExecFileSync(file, args, options) {
     if (script) {
       return origExecFileSync.call(this, process.execPath, [script, ...(args || [])], fixCwd(options));
     }
+  }
+  if (isJsFile(file)) {
+    return origExecFileSync.call(this, process.execPath, [file, ...(args || [])], fixCwd(options));
   }
   return origExecFileSync.call(this, file, args, fixCwd(options));
 };
@@ -106,5 +118,25 @@ cp.spawnSync = function patchedSpawnSync(command, args, options) {
       return origSpawnSync.call(this, process.execPath, [script, ...(args || [])], fixCwd(options));
     }
   }
+  if (isJsFile(command)) {
+    return origSpawnSync.call(this, process.execPath, [command, ...(args || [])], fixCwd(options));
+  }
   return origSpawnSync.call(this, command, args, fixCwd(options));
+};
+
+// ── Patch execSync ──
+// execSync takes a shell command string, not a file path. We intercept calls where
+// the command starts with a quoted .js/.mjs path and prepend node.exe.
+const origExecSync = cp.execSync;
+cp.execSync = function patchedExecSync(command, options) {
+  if (process.platform !== 'win32' || typeof command !== 'string') {
+    return origExecSync.call(this, command, options);
+  }
+  // Match: "C:\path\to\file.js" --args  or  C:\path\to\file.js --args
+  const m = command.match(/^"?([^"]+\.(js|mjs))"?\s/i);
+  if (m && fs.existsSync(m[1])) {
+    const rewritten = `"${process.execPath}" ${command}`;
+    return origExecSync.call(this, rewritten, fixCwd(options));
+  }
+  return origExecSync.call(this, command, fixCwd(options));
 };

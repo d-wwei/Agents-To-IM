@@ -229,6 +229,12 @@ export function loadConfig(): Config {
 
 function formatEnvLine(key: string, value: string | undefined): string {
   if (value === undefined || value === "") return "";
+  // Quote values that contain spaces, quotes, or shell metacharacters to prevent
+  // bash `source config.env` from misinterpreting them (see #Windows-bug-3).
+  if (/[\s"'\\$`!#&|;()<>]/.test(value)) {
+    const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `${key}="${escaped}"\n`;
+  }
   return `${key}=${value}\n`;
 }
 
