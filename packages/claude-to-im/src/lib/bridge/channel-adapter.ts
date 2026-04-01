@@ -68,8 +68,8 @@ export abstract class BaseChannelAdapter {
   /** Called when message processing starts (e.g., typing indicator). */
   onMessageStart?(_chatId: string): void;
 
-  /** Called when message processing ends. */
-  onMessageEnd?(_chatId: string): void;
+  /** Called when message processing ends. Receives inbound + response text for contextual reactions. */
+  onMessageEnd?(_chatId: string, _inboundText?: string, _responseText?: string): void;
 
   /**
    * Acknowledge that an update has been fully processed.

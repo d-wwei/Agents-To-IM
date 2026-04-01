@@ -46,8 +46,58 @@ const DEDUP_MAX = 1000;
 /** Max file download size (20 MB). */
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
-/** Feishu emoji type for typing indicator (same as Openclaw). */
-const TYPING_EMOJI = 'Typing';
+/**
+ * Contextual emoji reactions — Phase 1 (instant) + Phase 2 (post-response).
+ * Uses Feishu emoji_type values from:
+ * https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce
+ */
+
+/** Phase 1: instant reaction based on inbound message content. */
+const PHASE1_RULES: Array<{ patterns: RegExp; emoji: string }> = [
+  { patterns: /你好|hi\b|hello|hey|早上好|晚上好|早安|晚安|morning|evening/i, emoji: 'WAVE' },
+  { patterns: /哈哈|lol|笑|funny|有趣|搞笑|joke|段子|逗/i, emoji: 'LAUGH' },
+  { patterns: /谢谢|thanks|thank you|辛苦|感谢|多谢/i, emoji: 'HEART' },
+  { patterns: /帮我|请|麻烦|do\b|create|make|生成|建|搭/i, emoji: 'OnIt' },
+  { patterns: /分析|看看|检查|查一下|debug|排查|诊断|investigate/i, emoji: 'SMART' },
+  { patterns: /code|function|api|deploy|bug|error|报错|代码|部署|编译/i, emoji: 'StatusFlashOfInspiration' },
+  { patterns: /写|总结|报告|翻译|review|文档|draft|文章/i, emoji: 'StatusReading' },
+  { patterns: /为什么|怎么理解|explain|对比|区别|原理|how|why/i, emoji: 'THINKING' },
+  { patterns: /urgent|赶紧|马上|asap|挂了|炸了|紧急|立刻|crash/i, emoji: 'Fire' },
+];
+
+/** Phase 2: contextual reactions based on response content (0-2 emojis). */
+const PHASE2_RULES: Array<{ patterns: RegExp; emoji: string }> = [
+  { patterns: /```[\s\S]{50,}```/m, emoji: 'DONE' },               // code delivered
+  { patterns: /\b(fix|fixed|解决|修复|搞定|完成)\b/i, emoji: 'CheckMark' },
+  { patterns: /\b(warning|注意|caution|小心|风险)\b/i, emoji: 'Alarm' },
+  { patterns: /\b(sorry|抱歉|unfortunately|遗憾|无法|不支持)\b/i, emoji: 'FROWN' },
+  { patterns: /[😂🤣😄😆]|哈哈|笑/u, emoji: 'LOL' },
+  { patterns: /\|.*\|.*\|/m, emoji: 'Pin' },                       // table
+  { patterns: /^\s*(\d+\.|[-*])\s/m, emoji: 'JIAYI' },             // structured list
+];
+
+/** Pick Phase 1 emoji. Returns null if no strong match (skip rather than force). */
+function pickPhase1Emoji(text: string): string | null {
+  for (const rule of PHASE1_RULES) {
+    if (rule.patterns.test(text)) return rule.emoji;
+  }
+  // Long messages suggest deep thinking; short/simple ones → skip
+  return text.length > 200 ? 'THINKING' : null;
+}
+
+/** Pick Phase 2 emojis from response text. Returns 0-2 emojis (better-to-have). */
+function pickPhase2Emojis(_inbound: string, response: string): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const rule of PHASE2_RULES) {
+    if (rule.patterns.test(response) && !seen.has(rule.emoji)) {
+      seen.add(rule.emoji);
+      result.push(rule.emoji);
+      if (result.length >= 2) break;
+    }
+  }
+  return result;
+}
 const PCM_SAMPLE_RATE = 16000;
 const WAV_HEADER_BYTES = 44;
 
@@ -163,6 +213,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private botIds = new Set<string>();
   /** Track last incoming message ID per chat for typing indicator. */
   private lastIncomingMessageId = new Map<string, string>();
+  private lastIncomingText = new Map<string, string>();
   /** Track active typing reaction IDs per chat for cleanup. */
   private typingReactions = new Map<string, string>();
   private tenantAccessToken: string | null = null;
@@ -250,6 +301,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
     // Clear state
     this.seenMessageIds.clear();
     this.lastIncomingMessageId.clear();
+    this.lastIncomingText.clear();
     this.typingReactions.clear();
     this.senderNameCache.clear();
     this.previewMessages.clear();
@@ -287,50 +339,59 @@ export class FeishuAdapter extends BaseChannelAdapter {
     }
   }
 
-  // ── Typing indicator (Openclaw-style reaction) ─────────────
+  // ── Contextual emoji reactions ──────────────────────────────
 
   /**
-   * Add a "Typing" emoji reaction to the user's message.
-   * Called by bridge-manager via onMessageStart().
+   * Phase 1: Add an instant contextual emoji reaction to the user's message.
+   * Gives immediate acknowledgment with emotional nuance based on message content.
    */
   onMessageStart(chatId: string): void {
     const messageId = this.lastIncomingMessageId.get(chatId);
+    const inboundText = this.lastIncomingText.get(chatId) || '';
     if (!messageId || !this.restClient) return;
 
-    // Fire-and-forget — typing indicator is non-critical
+    const emoji = pickPhase1Emoji(inboundText);
+    if (!emoji) return;  // No strong match — skip rather than force
+
     this.restClient.im.messageReaction.create({
       path: { message_id: messageId },
-      data: { reaction_type: { emoji_type: TYPING_EMOJI } },
+      data: { reaction_type: { emoji_type: emoji } },
     }).then((res) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reactionId = (res as any)?.data?.reaction_id;
       if (reactionId) {
         this.typingReactions.set(chatId, reactionId);
       }
-    }).catch((err) => {
-      // Non-critical — don't log rate limit errors
-      const code = (err as { code?: number })?.code;
-      if (code !== 99991400 && code !== 99991403) {
-        console.warn('[feishu-adapter] Typing indicator failed:', err instanceof Error ? err.message : err);
-      }
-    });
+    }).catch(() => { /* non-critical */ });
   }
 
   /**
-   * Remove the "Typing" emoji reaction from the user's message.
-   * Called by bridge-manager via onMessageEnd().
+   * Phase 2: Remove Phase 1 emoji, then add 0-N contextual emojis
+   * based on the response content. These stay as the "summary reaction".
    */
-  onMessageEnd(chatId: string): void {
-    const reactionId = this.typingReactions.get(chatId);
+  onMessageEnd(chatId: string, inboundText?: string, responseText?: string): void {
     const messageId = this.lastIncomingMessageId.get(chatId);
-    if (!reactionId || !messageId || !this.restClient) return;
+    if (!messageId || !this.restClient) return;
 
+    // Remove Phase 1 emoji
+    const phase1ReactionId = this.typingReactions.get(chatId);
     this.typingReactions.delete(chatId);
+    if (phase1ReactionId) {
+      this.restClient.im.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: phase1ReactionId },
+      }).catch(() => { /* ignore */ });
+    }
 
-    // Fire-and-forget — failure is fine (reaction may already be gone)
-    this.restClient.im.messageReaction.delete({
-      path: { message_id: messageId, reaction_id: reactionId },
-    }).catch(() => { /* ignore */ });
+    // Add Phase 2 emojis (fire-and-forget)
+    if (responseText) {
+      const emojis = pickPhase2Emojis(inboundText || '', responseText);
+      for (const emoji of emojis) {
+        this.restClient.im.messageReaction.create({
+          path: { message_id: messageId },
+          data: { reaction_type: { emoji_type: emoji } },
+        }).catch(() => { /* non-critical */ });
+      }
+    }
   }
 
   // ── Streaming preview ────────────────────────────────────────
@@ -987,7 +1048,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
       }
     }
 
-    // Track last message ID per chat for typing indicator
+    // Track last message ID and text per chat for contextual emoji reactions
     this.lastIncomingMessageId.set(chatId, msg.message_id);
 
     // Extract content based on message type
@@ -1073,6 +1134,9 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     // Strip @mention markers from text
     text = this.stripMentionMarkers(text);
+
+    // Store inbound text for Phase 1 emoji reactions
+    if (text.trim()) this.lastIncomingText.set(chatId, text.trim());
 
     if (!text.trim() && attachments.length === 0) return;
 

@@ -679,7 +679,7 @@ async function executeBoundTask(
       }
       adapter.endPreview?.(msg.address.chatId, previewState.draftId, finalText);
     }
-    adapter.onMessageEnd?.(msg.address.chatId);
+    adapter.onMessageEnd?.(msg.address.chatId, msg.text, finalText);
   };
 
   let watchdogTriggered = false;
