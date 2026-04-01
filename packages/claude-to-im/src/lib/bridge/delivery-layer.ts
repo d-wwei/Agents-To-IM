@@ -16,11 +16,47 @@ import type { BaseChannelAdapter } from './channel-adapter.js';
 import { getBridgeContext } from './context.js';
 import { ChatRateLimiter } from './security/rate-limiter.js';
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_BASE_DELAY_MS = 1000;
 const JITTER_MAX_MS = 500;
-/** Delay between sending multiple chunks to avoid rate limits. */
-const INTER_CHUNK_DELAY_MS = 300;
+/** Default delay between sending multiple chunks to avoid rate limits. */
+const DEFAULT_INTER_CHUNK_DELAY_MS = 100; // Reduced from 300ms
+
+// ── Configurable constants (read from BridgeStore settings) ───
+
+function getMaxRetries(): number {
+  try {
+    const { store } = getBridgeContext();
+    const val = parseInt(store.getSetting('bridge_max_retries') || '', 10);
+    if (Number.isFinite(val) && val >= 0) return val;
+  } catch { /* context not ready yet */ }
+  return DEFAULT_MAX_RETRIES;
+}
+
+function getBaseDelayMs(): number {
+  try {
+    const { store } = getBridgeContext();
+    const val = parseInt(store.getSetting('bridge_base_delay_ms') || '', 10);
+    if (Number.isFinite(val) && val >= 0) return val;
+  } catch { /* context not ready yet */ }
+  return DEFAULT_BASE_DELAY_MS;
+}
+
+function getInterChunkDelayMs(channelType?: ChannelType): number {
+  try {
+    const { store } = getBridgeContext();
+    // Per-platform override: bridge_{channelType}_inter_chunk_delay_ms
+    if (channelType) {
+      const platform = store.getSetting(`bridge_${channelType}_inter_chunk_delay_ms`);
+      const pVal = parseInt(platform || '', 10);
+      if (Number.isFinite(pVal) && pVal >= 0) return pVal;
+    }
+    // Global override: bridge_inter_chunk_delay_ms
+    const val = parseInt(store.getSetting('bridge_inter_chunk_delay_ms') || '', 10);
+    if (Number.isFinite(val) && val >= 0) return val;
+  } catch { /* context not ready yet */ }
+  return DEFAULT_INTER_CHUNK_DELAY_MS;
+}
 
 /** Shared rate limiter instance (20 messages/minute per chat). */
 const rateLimiter = new ChatRateLimiter();
@@ -62,7 +98,7 @@ function chunkText(text: string, maxLength: number): string[] {
  * Compute exponential backoff delay with jitter.
  */
 function backoffDelay(attempt: number): number {
-  const base = BASE_DELAY_MS * Math.pow(2, attempt);
+  const base = getBaseDelayMs() * Math.pow(2, attempt);
   const jitter = Math.random() * JITTER_MAX_MS;
   return base + jitter;
 }
@@ -177,7 +213,7 @@ export async function deliver(
 
     // Inter-chunk delay to avoid hitting rate limits on multi-chunk messages
     if (i > 0) {
-      await new Promise(r => setTimeout(r, INTER_CHUNK_DELAY_MS));
+      await new Promise(r => setTimeout(r, getInterChunkDelayMs(adapter.channelType)));
     }
 
     const chunkMessage: OutboundMessage = {
@@ -237,8 +273,9 @@ async function sendWithRetry(
   plainFallback?: string,
 ): Promise<SendResult> {
   let lastError: string | undefined;
+  const maxRetries = getMaxRetries();
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     const result = await adapter.send(message);
     if (result.ok) return result;
 
@@ -268,7 +305,7 @@ async function sendWithRetry(
     }
 
     // Wait before next retry — honor retry_after for 429
-    if (attempt < MAX_RETRIES - 1) {
+    if (attempt < maxRetries - 1) {
       await new Promise(r => setTimeout(r, retryDelay(result, attempt)));
     }
   }
@@ -304,7 +341,7 @@ export async function deliverRendered(
   for (let i = 0; i < chunks.length; i++) {
     await rateLimiter.acquire(address.chatId);
     if (i > 0) {
-      await new Promise(r => setTimeout(r, INTER_CHUNK_DELAY_MS));
+      await new Promise(r => setTimeout(r, getInterChunkDelayMs(adapter.channelType)));
     }
 
     const chunk = chunks[i];

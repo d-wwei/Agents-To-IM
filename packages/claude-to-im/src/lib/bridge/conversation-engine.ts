@@ -72,18 +72,42 @@ export async function processMessage(
   const { store, llm } = getBridgeContext();
   const sessionId = binding.codepilotSessionId;
 
-  // Acquire session lock
+  // Acquire session lock — poll-and-retry instead of immediate failure
+  const LOCK_POLL_INTERVAL_MS = 500;   // Check every 500ms
+  const LOCK_WAIT_TIMEOUT_MS = 30_000; // Give up after 30 seconds
+
   const lockId = crypto.randomBytes(8).toString('hex');
-  const lockAcquired = store.acquireSessionLock(sessionId, lockId, `bridge-${binding.channelType}`, 600);
+  let lockAcquired = store.acquireSessionLock(sessionId, lockId, `bridge-${binding.channelType}`, 600);
+
   if (!lockAcquired) {
-    return {
-      responseText: '',
-      tokenUsage: null,
-      hasError: true,
-      errorMessage: 'Session is busy processing another request',
-      permissionRequests: [],
-      sdkSessionId: null,
-    };
+    // Wait for lock to become available
+    const waitStart = Date.now();
+    while (!lockAcquired && (Date.now() - waitStart) < LOCK_WAIT_TIMEOUT_MS) {
+      // Check abort signal
+      if (abortSignal?.aborted) {
+        return {
+          responseText: '',
+          tokenUsage: null,
+          hasError: true,
+          errorMessage: 'Request cancelled while waiting for session',
+          permissionRequests: [],
+          sdkSessionId: null,
+        };
+      }
+      await new Promise(resolve => setTimeout(resolve, LOCK_POLL_INTERVAL_MS));
+      lockAcquired = store.acquireSessionLock(sessionId, lockId, `bridge-${binding.channelType}`, 600);
+    }
+
+    if (!lockAcquired) {
+      return {
+        responseText: '',
+        tokenUsage: null,
+        hasError: true,
+        errorMessage: 'Session is busy — timed out waiting after 30s. Please try again.',
+        permissionRequests: [],
+        sdkSessionId: null,
+      };
+    }
   }
 
   store.setSessionRuntimeStatus(sessionId, 'running');

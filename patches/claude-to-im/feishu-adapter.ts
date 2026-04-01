@@ -25,6 +25,7 @@ import type {
   ChannelType,
   InboundMessage,
   OutboundMessage,
+  PreviewCapabilities,
   SendResult,
 } from '../types';
 import type { FileAttachment } from '../types';
@@ -168,6 +169,12 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private tenantAccessTokenExpiresAt = 0;
   private senderNameCache = new Map<string, string | null>();
   private contactPermissionAvailable = true;
+  /** Streaming preview: map chatId → message_id of the current preview card. */
+  private previewMessages = new Map<string, string>();
+  /** Streaming preview: pending sendPreview promise (for awaiting in endPreview). */
+  private previewPending = new Map<string, Promise<void>>();
+  /** Streaming preview: chats where preview permanently failed. */
+  private previewDegraded = new Set<string>();
 
   // ── Lifecycle ───────────────────────────────────────────────
 
@@ -245,6 +252,8 @@ export class FeishuAdapter extends BaseChannelAdapter {
     this.lastIncomingMessageId.clear();
     this.typingReactions.clear();
     this.senderNameCache.clear();
+    this.previewMessages.clear();
+    this.previewDegraded.clear();
     this.contactPermissionAvailable = true;
     this.tenantAccessToken = null;
     this.tenantAccessTokenExpiresAt = 0;
@@ -322,6 +331,128 @@ export class FeishuAdapter extends BaseChannelAdapter {
     this.restClient.im.messageReaction.delete({
       path: { message_id: messageId, reaction_id: reactionId },
     }).catch(() => { /* ignore */ });
+  }
+
+  // ── Streaming preview ────────────────────────────────────────
+
+  getPreviewCapabilities(chatId: string): PreviewCapabilities | null {
+    // Global kill switch
+    if (getBridgeContext().store.getSetting('bridge_feishu_stream_enabled') === 'false') return null;
+
+    // Already degraded for this chat
+    if (this.previewDegraded.has(chatId)) return null;
+
+    return { supported: true, privateOnly: false };
+  }
+
+  async sendPreview(chatId: string, text: string, _draftId: number): Promise<'sent' | 'skip' | 'degrade'> {
+    if (!this.restClient) return 'skip';
+
+    // Track this call so endPreview can await it before deleting
+    const result = this._doSendPreview(chatId, text);
+    this.previewPending.set(chatId, result.then(() => {}));
+    return result;
+  }
+
+  private async _doSendPreview(chatId: string, text: string): Promise<'sent' | 'skip' | 'degrade'> {
+    const cardBody = JSON.stringify({
+      config: { wide_screen_mode: true },
+      elements: [
+        {
+          tag: 'markdown',
+          content: text,
+        },
+        {
+          tag: 'note',
+          elements: [
+            { tag: 'plain_text', content: '\u23F3 Generating...' },
+          ],
+        },
+      ],
+    });
+
+    const existingMsgId = this.previewMessages.get(chatId);
+
+    try {
+      if (existingMsgId) {
+        // Patch the existing preview card
+        const res = await this.restClient.im.message.patch({
+          path: { message_id: existingMsgId },
+          data: { content: cardBody },
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((res as any)?.code === 0) return 'sent';
+        // Non-zero code — treat as transient unless clearly permanent
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const code = (res as any)?.code;
+        if (code === 230001 || code === 230002) {
+          // Message not found / no permission — permanent
+          this.previewDegraded.add(chatId);
+          this.previewMessages.delete(chatId);
+          return 'degrade';
+        }
+        return 'skip';
+      } else {
+        // Send a new preview card
+        const res = await this.restClient.im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'interactive',
+            content: cardBody,
+          },
+        });
+        if (res?.data?.message_id) {
+          this.previewMessages.set(chatId, res.data.message_id);
+          return 'sent';
+        }
+        return 'skip';
+      }
+    } catch (err) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const httpStatus = (err as any)?.httpStatus ?? (err as any)?.response?.status;
+      if (httpStatus === 400 || httpStatus === 404) {
+        this.previewDegraded.add(chatId);
+        this.previewMessages.delete(chatId);
+        return 'degrade';
+      }
+      // 429 or transient — skip this update
+      return 'skip';
+    }
+  }
+
+  endPreview(chatId: string, _draftId: number, finalText?: string): void {
+    const pending = this.previewPending.get(chatId);
+    this.previewPending.delete(chatId);
+
+    // Fire-and-forget: await any in-flight sendPreview, then finalize or delete.
+    const doEnd = async () => {
+      if (pending) await pending.catch(() => {});
+      const msgId = this.previewMessages.get(chatId);
+      this.previewMessages.delete(chatId);
+      if (!msgId || !this.restClient) return;
+
+      if (finalText) {
+        // Patch the card with final content — remove "Generating..." footer.
+        // The card stays as the final output. No separate delivery needed.
+        const card = JSON.stringify({
+          config: { wide_screen_mode: true },
+          elements: [{ tag: 'markdown', content: finalText }],
+        });
+        await this.restClient.im.message.patch({
+          path: { message_id: msgId },
+          data: { content: card },
+        }).catch((err: unknown) => {
+          console.warn('[feishu-adapter] Final card patch failed:', err instanceof Error ? err.message : err);
+        });
+      } else {
+        // No final text (watchdog/error) — delete the preview card
+        await this.restClient.im.message.delete({
+          path: { message_id: msgId },
+        }).catch(() => {});
+      }
+    };
+    doEnd().catch(() => {});
   }
 
   // ── Send ────────────────────────────────────────────────────

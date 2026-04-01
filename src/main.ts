@@ -167,6 +167,23 @@ async function main(): Promise<void> {
     }
   }
 
+  // Pre-warm V2 sessions for existing bindings so the first message after
+  // daemon restart can use the fast V2 path instead of a cold V1 spawn.
+  // This is fire-and-forget — failures are silently ignored.
+  if (rawProvider instanceof SDKLLMProvider && !config.disableSessionPool) {
+    const bindings = store.listChannelBindings();
+    let warmed = 0;
+    for (const b of bindings) {
+      if (b.workingDirectory && b.sdkSessionId) {
+        rawProvider.prewarmSession(b.sdkSessionId, b.workingDirectory);
+        warmed++;
+      }
+    }
+    if (warmed > 0) {
+      console.log(`[${LOG_PREFIX}] Pre-warmed ${warmed} V2 session(s) from existing bindings`);
+    }
+  }
+
   const gateway = {
     resolvePendingPermission: (id: string, resolution: { behavior: 'allow' | 'deny'; message?: string }) =>
       pendingPerms.resolve(id, resolution),

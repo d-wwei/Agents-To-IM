@@ -15,29 +15,30 @@
  * the normal /perm command processing pipeline.
  */
 
+import { execFileSync } from 'node:child_process';
 import crypto from 'crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type {
   ChannelType,
   InboundMessage,
   OutboundMessage,
+  PreviewCapabilities,
   SendResult,
-} from '../types.js';
-import type { FileAttachment } from '../types.js';
-import type { ToolCallInfo } from '../types.js';
-import { BaseChannelAdapter, registerAdapterFactory } from '../channel-adapter.js';
-import { getBridgeContext } from '../context.js';
+} from '../types';
+import type { FileAttachment } from '../types';
+import { BaseChannelAdapter, registerAdapterFactory } from '../channel-adapter';
+import { getBridgeContext } from '../context';
 import {
   htmlToFeishuMarkdown,
   preprocessFeishuMarkdown,
   hasComplexMarkdown,
   buildCardContent,
   buildPostContent,
-  buildStreamingContent,
-  buildFinalCardJson,
-  buildPermissionButtonCard,
-  formatElapsed,
-} from '../markdown/feishu.js';
+} from '../markdown/feishu';
+import * as broker from '../permission-broker';
 
 /** Max number of message_ids to keep for dedup. */
 const DEDUP_MAX = 1000;
@@ -47,22 +48,8 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
 /** Feishu emoji type for typing indicator (same as Openclaw). */
 const TYPING_EMOJI = 'Typing';
-
-/** State for an active CardKit v2 streaming card. */
-interface FeishuCardState {
-  cardId: string;
-  messageId: string;
-  sequence: number;
-  startTime: number;
-  toolCalls: ToolCallInfo[];
-  thinking: boolean;
-  pendingText: string | null;
-  lastUpdateAt: number;
-  throttleTimer: ReturnType<typeof setTimeout> | null;
-}
-
-/** Streaming card throttle interval (ms). */
-const CARD_THROTTLE_MS = 200;
+const PCM_SAMPLE_RATE = 16000;
+const WAV_HEADER_BYTES = 44;
 
 /** Shape of the SDK's im.message.receive_v1 event data. */
 type FeishuMessageEventData = {
@@ -90,6 +77,19 @@ type FeishuMessageEventData = {
   };
 };
 
+type FeishuCardActionEventData = {
+  open_id?: string;
+  user_id?: string;
+  open_message_id?: string;
+  tenant_key?: string;
+  action?: {
+    tag?: string;
+    value?: Record<string, unknown>;
+    option?: string;
+    timezone?: string;
+  };
+};
+
 
 /** MIME type guesses by message_type. */
 const MIME_BY_TYPE: Record<string, string> = {
@@ -98,6 +98,55 @@ const MIME_BY_TYPE: Record<string, string> = {
   audio: 'audio/ogg',
   video: 'video/mp4',
   media: 'application/octet-stream',
+};
+
+/**
+ * Detect MIME type from binary magic bytes. Returns null if unrecognized.
+ */
+function detectMimeFromBytes(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  // Images
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  // RIFF container (WebP or WAV)
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+    const fourcc = buf.subarray(8, 12).toString('ascii');
+    if (fourcc === 'WEBP') return 'image/webp';
+    if (fourcc === 'WAVE') return 'audio/wav';
+    if (fourcc === 'AVI ') return 'video/avi';
+  }
+  // OGG (Opus/Vorbis)
+  if (buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return 'audio/ogg';
+  // MP3 (ID3 tag or sync word)
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return 'audio/mpeg';
+  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) return 'audio/mpeg';
+  // FLAC
+  if (buf[0] === 0x66 && buf[1] === 0x4C && buf[2] === 0x61 && buf[3] === 0x43) return 'audio/flac';
+  // PDF
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return 'application/pdf';
+  // ZIP (docx/xlsx/pptx are also ZIP)
+  if (buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) return 'application/zip';
+  // MP4 / M4A (ftyp box)
+  if (buf.length >= 8 && buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = buf.subarray(8, 12).toString('ascii');
+    if (brand === 'M4A ' || brand === 'M4B ') return 'audio/mp4';
+    return 'video/mp4';
+  }
+  return null;
+}
+
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+  'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/flac': 'flac', 'audio/mp4': 'm4a',
+  'video/mp4': 'mp4', 'video/avi': 'avi',
+  'application/pdf': 'pdf', 'application/zip': 'zip',
+};
+
+type GeneratedVoiceReply = {
+  fileName: string;
+  mimeType: string;
+  data: Buffer;
 };
 
 export class FeishuAdapter extends BaseChannelAdapter {
@@ -116,10 +165,16 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private lastIncomingMessageId = new Map<string, string>();
   /** Track active typing reaction IDs per chat for cleanup. */
   private typingReactions = new Map<string, string>();
-  /** Active streaming card state per chatId. */
-  private activeCards = new Map<string, FeishuCardState>();
-  /** In-flight card creation promises per chatId — prevents duplicate creation. */
-  private cardCreatePromises = new Map<string, Promise<boolean>>();
+  private tenantAccessToken: string | null = null;
+  private tenantAccessTokenExpiresAt = 0;
+  private senderNameCache = new Map<string, string | null>();
+  private contactPermissionAvailable = true;
+  /** Streaming preview: map chatId → message_id of the current preview card. */
+  private previewMessages = new Map<string, string>();
+  /** Streaming preview: pending sendPreview promise (for awaiting in endPreview). */
+  private previewPending = new Map<string, Promise<void>>();
+  /** Streaming preview: chats where preview permanently failed. */
+  private previewDegraded = new Set<string>();
 
   // ── Lifecycle ───────────────────────────────────────────────
 
@@ -134,10 +189,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     const appId = getBridgeContext().store.getSetting('bridge_feishu_app_id') || '';
     const appSecret = getBridgeContext().store.getSetting('bridge_feishu_app_secret') || '';
-    const domainSetting = getBridgeContext().store.getSetting('bridge_feishu_domain') || 'feishu';
-    const domain = domainSetting === 'lark'
-      ? lark.Domain.Lark
-      : lark.Domain.Feishu;
+    const domain = this.resolveDomain();
 
     // Create REST client
     this.restClient = new lark.Client({
@@ -151,14 +203,16 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     this.running = true;
 
-    // Create EventDispatcher and register event handlers.
+    // Register both inbound chat messages and card action callbacks.
+    // Feishu long-connection callback delivery is only available when the app
+    // is configured for "Receive events/callbacks through persistent connection".
     const dispatcher = new lark.EventDispatcher({}).register({
       'im.message.receive_v1': async (data) => {
         await this.handleIncomingEvent(data as FeishuMessageEventData);
       },
-      'card.action.trigger': (async (data: unknown) => {
-        return await this.handleCardAction(data);
-      }) as any,
+      'card.action.trigger': async (data) => {
+        return this.handleCardActionEvent(data as FeishuCardActionEventData);
+      },
     });
 
     // Create and start WSClient
@@ -167,29 +221,6 @@ export class FeishuAdapter extends BaseChannelAdapter {
       appSecret,
       domain,
     });
-
-    // Monkey-patch WSClient.handleEventData to support card action events (type: "card").
-    // The SDK's WSClient only processes type="event" messages. Card action callbacks
-    // arrive as type="card" and would be silently dropped without this patch.
-    const wsClientAny = this.wsClient as any;
-    if (typeof wsClientAny.handleEventData === 'function') {
-      const origHandleEventData = wsClientAny.handleEventData.bind(wsClientAny);
-      wsClientAny.handleEventData = (data: any) => {
-        const msgType = data.headers?.find?.((h: any) => h.key === 'type')?.value;
-        if (msgType === 'card') {
-          console.log('[feishu-adapter] handleEventData type: card (patched → event)');
-          const patchedData = {
-            ...data,
-            headers: data.headers.map((h: any) =>
-              h.key === 'type' ? { ...h, value: 'event' } : h,
-            ),
-          };
-          return origHandleEventData(patchedData);
-        }
-        return origHandleEventData(data);
-      };
-    }
-
     this.wsClient.start({ eventDispatcher: dispatcher });
 
     console.log('[feishu-adapter] Started (botOpenId:', this.botOpenId || 'unknown', ')');
@@ -216,17 +247,16 @@ export class FeishuAdapter extends BaseChannelAdapter {
     }
     this.waiters = [];
 
-    // Clean up active cards
-    for (const [, state] of this.activeCards) {
-      if (state.throttleTimer) clearTimeout(state.throttleTimer);
-    }
-    this.activeCards.clear();
-    this.cardCreatePromises.clear();
-
     // Clear state
     this.seenMessageIds.clear();
     this.lastIncomingMessageId.clear();
     this.typingReactions.clear();
+    this.senderNameCache.clear();
+    this.previewMessages.clear();
+    this.previewDegraded.clear();
+    this.contactPermissionAvailable = true;
+    this.tenantAccessToken = null;
+    this.tenantAccessTokenExpiresAt = 0;
 
     console.log('[feishu-adapter] Stopped');
   }
@@ -260,28 +290,25 @@ export class FeishuAdapter extends BaseChannelAdapter {
   // ── Typing indicator (Openclaw-style reaction) ─────────────
 
   /**
-   * Add a "Typing" emoji reaction to the user's message and create streaming card.
+   * Add a "Typing" emoji reaction to the user's message.
    * Called by bridge-manager via onMessageStart().
    */
   onMessageStart(chatId: string): void {
     const messageId = this.lastIncomingMessageId.get(chatId);
-
-    // Create streaming card (fire-and-forget — fallback to traditional if fails)
-    if (messageId) {
-      this.createStreamingCard(chatId, messageId).catch(() => {});
-    }
-
-    // Typing indicator (same as before)
     if (!messageId || !this.restClient) return;
+
+    // Fire-and-forget — typing indicator is non-critical
     this.restClient.im.messageReaction.create({
       path: { message_id: messageId },
       data: { reaction_type: { emoji_type: TYPING_EMOJI } },
     }).then((res) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reactionId = (res as any)?.data?.reaction_id;
       if (reactionId) {
         this.typingReactions.set(chatId, reactionId);
       }
     }).catch((err) => {
+      // Non-critical — don't log rate limit errors
       const code = (err as { code?: number })?.code;
       if (code !== 99991400 && code !== 99991403) {
         console.warn('[feishu-adapter] Typing indicator failed:', err instanceof Error ? err.message : err);
@@ -290,337 +317,142 @@ export class FeishuAdapter extends BaseChannelAdapter {
   }
 
   /**
-   * Remove the "Typing" emoji reaction and clean up card state.
+   * Remove the "Typing" emoji reaction from the user's message.
    * Called by bridge-manager via onMessageEnd().
    */
   onMessageEnd(chatId: string): void {
-    // Clean up any orphaned card state (normally cleaned by finalizeCard)
-    this.cleanupCard(chatId);
-
-    // Remove typing reaction (same as before)
     const reactionId = this.typingReactions.get(chatId);
     const messageId = this.lastIncomingMessageId.get(chatId);
     if (!reactionId || !messageId || !this.restClient) return;
+
     this.typingReactions.delete(chatId);
+
+    // Fire-and-forget — failure is fine (reaction may already be gone)
     this.restClient.im.messageReaction.delete({
       path: { message_id: messageId, reaction_id: reactionId },
     }).catch(() => { /* ignore */ });
   }
 
-  // ── Card Action Handler ─────────────────────────────────────
+  // ── Streaming preview ────────────────────────────────────────
 
-  /**
-   * Handle card.action.trigger events (button clicks on permission cards).
-   * Converts button clicks to synthetic InboundMessage with callbackData.
-   * Must return within 3 seconds (Feishu timeout), so uses a 2.5s race.
-   */
-  private async handleCardAction(data: unknown): Promise<unknown> {
-    const FALLBACK_TOAST = { toast: { type: 'info' as const, content: '已收到' } };
+  getPreviewCapabilities(chatId: string): PreviewCapabilities | null {
+    // Global kill switch
+    if (getBridgeContext().store.getSetting('bridge_feishu_stream_enabled') === 'false') return null;
 
-    try {
-      const event = data as any;
-      const value = event?.action?.value ?? {};
-      const callbackData = value.callback_data;
-      if (!callbackData) return FALLBACK_TOAST;
+    // Already degraded for this chat
+    if (this.previewDegraded.has(chatId)) return null;
 
-      // Extract chat/user context
-      const chatId = event?.context?.open_chat_id || value.chatId || '';
-      const messageId = event?.context?.open_message_id || event?.open_message_id || '';
-      const userId = event?.operator?.open_id || event?.open_id || '';
-
-      if (!chatId) return FALLBACK_TOAST;
-
-      const callbackMsg: import('../types.js').InboundMessage = {
-        messageId: messageId || `card_action_${Date.now()}`,
-        address: {
-          channelType: 'feishu',
-          chatId,
-          userId,
-        },
-        text: '',
-        timestamp: Date.now(),
-        callbackData,
-        callbackMessageId: messageId,
-      };
-      this.enqueue(callbackMsg);
-
-      return { toast: { type: 'info' as const, content: '已收到，正在处理...' } };
-    } catch (err) {
-      console.error('[feishu-adapter] Card action handler error:', err instanceof Error ? err.message : err);
-      return FALLBACK_TOAST;
-    }
+    return { supported: true, privateOnly: false };
   }
 
-  // ── Streaming Card (CardKit v2) ────────────────────────────────
+  async sendPreview(chatId: string, text: string, _draftId: number): Promise<'sent' | 'skip' | 'degrade'> {
+    if (!this.restClient) return 'skip';
 
-  /**
-   * Create a new streaming card and send it as a message.
-   * Returns true if card was created successfully.
-   */
-  private createStreamingCard(chatId: string, replyToMessageId?: string): Promise<boolean> {
-    if (!this.restClient || this.activeCards.has(chatId)) return Promise.resolve(false);
-
-    // In-flight guard: if creation is already in progress, return the existing promise
-    const existing = this.cardCreatePromises.get(chatId);
-    if (existing) return existing;
-
-    const promise = this._doCreateStreamingCard(chatId, replyToMessageId);
-    this.cardCreatePromises.set(chatId, promise);
-    promise.finally(() => this.cardCreatePromises.delete(chatId));
-    return promise;
+    // Track this call so endPreview can await it before deleting
+    const result = this._doSendPreview(chatId, text);
+    this.previewPending.set(chatId, result.then(() => {}));
+    return result;
   }
 
-  private async _doCreateStreamingCard(chatId: string, replyToMessageId?: string): Promise<boolean> {
-    if (!this.restClient) return false;
+  private async _doSendPreview(chatId: string, text: string): Promise<'sent' | 'skip' | 'degrade'> {
+    const cardBody = JSON.stringify({
+      config: { wide_screen_mode: true },
+      elements: [
+        {
+          tag: 'markdown',
+          content: text,
+        },
+        {
+          tag: 'note',
+          elements: [
+            { tag: 'plain_text', content: '\u23F3 Generating...' },
+          ],
+        },
+      ],
+    });
+
+    const existingMsgId = this.previewMessages.get(chatId);
 
     try {
-      // Step 1: Create card via CardKit v2
-      const cardBody = {
-        schema: '2.0',
-        config: {
-          streaming_mode: true,
-          wide_screen_mode: true,
-          summary: { content: '思考中...' },
-        },
-        body: {
-          elements: [{
-            tag: 'markdown',
-            content: '💭 Thinking...',
-            text_align: 'left',
-            text_size: 'normal',
-            element_id: 'streaming_content',
-          }],
-        },
-      };
-
-      const createResp = await (this.restClient as any).cardkit.v2.card.create({
-        data: { type: 'card_json', data: JSON.stringify(cardBody) },
-      });
-      const cardId = createResp?.data?.card_id;
-      if (!cardId) {
-        console.warn('[feishu-adapter] Card create returned no card_id');
-        return false;
-      }
-
-      // Step 2: Send card as IM message
-      const cardContent = JSON.stringify({ type: 'card', data: { card_id: cardId } });
-      let msgResp;
-      if (replyToMessageId) {
-        msgResp = await this.restClient.im.message.reply({
-          path: { message_id: replyToMessageId },
-          data: { content: cardContent, msg_type: 'interactive' },
+      if (existingMsgId) {
+        // Patch the existing preview card
+        const res = await this.restClient.im.message.patch({
+          path: { message_id: existingMsgId },
+          data: { content: cardBody },
         });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((res as any)?.code === 0) return 'sent';
+        // Non-zero code — treat as transient unless clearly permanent
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const code = (res as any)?.code;
+        if (code === 230001 || code === 230002) {
+          // Message not found / no permission — permanent
+          this.previewDegraded.add(chatId);
+          this.previewMessages.delete(chatId);
+          return 'degrade';
+        }
+        return 'skip';
       } else {
-        msgResp = await this.restClient.im.message.create({
+        // Send a new preview card
+        const res = await this.restClient.im.message.create({
           params: { receive_id_type: 'chat_id' },
           data: {
             receive_id: chatId,
             msg_type: 'interactive',
-            content: cardContent,
+            content: cardBody,
           },
         });
+        if (res?.data?.message_id) {
+          this.previewMessages.set(chatId, res.data.message_id);
+          return 'sent';
+        }
+        return 'skip';
       }
-
-      const messageId = msgResp?.data?.message_id;
-      if (!messageId) {
-        console.warn('[feishu-adapter] Card message send returned no message_id');
-        return false;
-      }
-
-      // Store card state
-      this.activeCards.set(chatId, {
-        cardId,
-        messageId,
-        sequence: 0,
-        startTime: Date.now(),
-        toolCalls: [],
-        thinking: true,
-        pendingText: null,
-        lastUpdateAt: 0,
-        throttleTimer: null,
-      });
-
-      console.log(`[feishu-adapter] Streaming card created: cardId=${cardId}, msgId=${messageId}`);
-      return true;
     } catch (err) {
-      console.warn('[feishu-adapter] Failed to create streaming card:', err instanceof Error ? err.message : err);
-      return false;
-    }
-  }
-
-  /**
-   * Update streaming card content with throttling.
-   */
-  private updateCardContent(chatId: string, text: string): void {
-    const state = this.activeCards.get(chatId);
-    if (!state || !this.restClient) return;
-
-    // Clear thinking state once text arrives
-    if (state.thinking && text.trim()) {
-      state.thinking = false;
-    }
-    state.pendingText = text;
-
-    const elapsed = Date.now() - state.lastUpdateAt;
-    if (elapsed < CARD_THROTTLE_MS && state.lastUpdateAt > 0) {
-      // Schedule trailing-edge flush
-      if (!state.throttleTimer) {
-        state.throttleTimer = setTimeout(() => {
-          state.throttleTimer = null;
-          this.flushCardUpdate(chatId);
-        }, CARD_THROTTLE_MS - elapsed);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const httpStatus = (err as any)?.httpStatus ?? (err as any)?.response?.status;
+      if (httpStatus === 400 || httpStatus === 404) {
+        this.previewDegraded.add(chatId);
+        this.previewMessages.delete(chatId);
+        return 'degrade';
       }
-      return;
-    }
-
-    // Clear pending timer and flush immediately
-    if (state.throttleTimer) {
-      clearTimeout(state.throttleTimer);
-      state.throttleTimer = null;
-    }
-    this.flushCardUpdate(chatId);
-  }
-
-  /**
-   * Flush pending card update to Feishu API.
-   */
-  private flushCardUpdate(chatId: string): void {
-    const state = this.activeCards.get(chatId);
-    if (!state || !this.restClient) return;
-
-    const content = buildStreamingContent(state.pendingText || '', state.toolCalls);
-
-    state.sequence++;
-    const seq = state.sequence;
-    const cardId = state.cardId;
-
-    // Fire-and-forget — streaming updates are non-critical
-    (this.restClient as any).cardkit.v2.card.streamContent({
-      path: { card_id: cardId },
-      data: { content, sequence: seq },
-    }).then(() => {
-      state.lastUpdateAt = Date.now();
-    }).catch((err: unknown) => {
-      console.warn('[feishu-adapter] streamContent failed:', err instanceof Error ? err.message : err);
-    });
-  }
-
-  /**
-   * Update tool progress in the streaming card.
-   */
-  private updateToolProgress(chatId: string, tools: ToolCallInfo[]): void {
-    const state = this.activeCards.get(chatId);
-    if (!state) return;
-    state.toolCalls = tools;
-    // Trigger a content flush with current text + updated tools
-    this.updateCardContent(chatId, state.pendingText || '');
-  }
-
-  /**
-   * Finalize the streaming card: close streaming mode, update with final content + footer.
-   */
-  private async finalizeCard(
-    chatId: string,
-    status: 'completed' | 'interrupted' | 'error',
-    responseText: string,
-  ): Promise<boolean> {
-    // Wait for in-flight card creation to complete before finalizing
-    const pending = this.cardCreatePromises.get(chatId);
-    if (pending) {
-      try { await pending; } catch { /* creation failed — no card to finalize */ }
-    }
-
-    const state = this.activeCards.get(chatId);
-    if (!state || !this.restClient) return false;
-
-    // Clear any pending throttle timer
-    if (state.throttleTimer) {
-      clearTimeout(state.throttleTimer);
-      state.throttleTimer = null;
-    }
-
-    try {
-      // Step 1: Close streaming mode
-      state.sequence++;
-      await (this.restClient as any).cardkit.v2.card.settings.streamingMode.set({
-        path: { card_id: state.cardId },
-        data: { streaming_mode: false, sequence: state.sequence },
-      });
-
-      // Step 2: Build and apply final card
-      const statusLabels: Record<string, string> = {
-        completed: '✅ Completed',
-        interrupted: '⚠️ Interrupted',
-        error: '❌ Error',
-      };
-      const elapsedMs = Date.now() - state.startTime;
-      const footer = {
-        status: statusLabels[status] || status,
-        elapsed: formatElapsed(elapsedMs),
-      };
-
-      const finalCardJson = buildFinalCardJson(responseText, state.toolCalls, footer);
-
-      state.sequence++;
-      await (this.restClient as any).cardkit.v2.card.update({
-        path: { card_id: state.cardId },
-        data: { type: 'card_json', data: finalCardJson, sequence: state.sequence },
-      });
-
-      console.log(`[feishu-adapter] Card finalized: cardId=${state.cardId}, status=${status}, elapsed=${formatElapsed(elapsedMs)}`);
-      return true;
-    } catch (err) {
-      console.warn('[feishu-adapter] Card finalize failed:', err instanceof Error ? err.message : err);
-      return false;
-    } finally {
-      this.activeCards.delete(chatId);
+      // 429 or transient — skip this update
+      return 'skip';
     }
   }
 
-  /**
-   * Clean up card state without finalizing (e.g. on unexpected errors).
-   */
-  private cleanupCard(chatId: string): void {
-    this.cardCreatePromises.delete(chatId);
-    const state = this.activeCards.get(chatId);
-    if (!state) return;
-    if (state.throttleTimer) {
-      clearTimeout(state.throttleTimer);
-    }
-    this.activeCards.delete(chatId);
-  }
+  endPreview(chatId: string, _draftId: number, finalText?: string): void {
+    const pending = this.previewPending.get(chatId);
+    this.previewPending.delete(chatId);
 
-  /**
-   * Check if there is an active streaming card for a given chat.
-   */
-  hasActiveCard(chatId: string): boolean {
-    return this.activeCards.has(chatId);
-  }
+    // Fire-and-forget: await any in-flight sendPreview, then finalize or delete.
+    const doEnd = async () => {
+      if (pending) await pending.catch(() => {});
+      const msgId = this.previewMessages.get(chatId);
+      this.previewMessages.delete(chatId);
+      if (!msgId || !this.restClient) return;
 
-  // ── Streaming adapter interface ────────────────────────────────
-
-  /**
-   * Called by bridge-manager on each text SSE event.
-   * Creates streaming card on first call, then updates content.
-   */
-  onStreamText(chatId: string, fullText: string): void {
-    if (!this.activeCards.has(chatId)) {
-      // Card should have been created by onMessageStart, but create lazily if not
-      const messageId = this.lastIncomingMessageId.get(chatId);
-      this.createStreamingCard(chatId, messageId).then((ok) => {
-        if (ok) this.updateCardContent(chatId, fullText);
-      }).catch(() => {});
-      return;
-    }
-    this.updateCardContent(chatId, fullText);
-  }
-
-  onToolEvent(chatId: string, tools: ToolCallInfo[]): void {
-    this.updateToolProgress(chatId, tools);
-  }
-
-  async onStreamEnd(chatId: string, status: 'completed' | 'interrupted' | 'error', responseText: string): Promise<boolean> {
-    return this.finalizeCard(chatId, status, responseText);
+      if (finalText) {
+        // Patch the card with final content — remove "Generating..." footer.
+        // The card stays as the final output. No separate delivery needed.
+        const card = JSON.stringify({
+          config: { wide_screen_mode: true },
+          elements: [{ tag: 'markdown', content: finalText }],
+        });
+        await this.restClient.im.message.patch({
+          path: { message_id: msgId },
+          data: { content: card },
+        }).catch((err: unknown) => {
+          console.warn('[feishu-adapter] Final card patch failed:', err instanceof Error ? err.message : err);
+        });
+      } else {
+        // No final text (watchdog/error) — delete the preview card
+        await this.restClient.im.message.delete({
+          path: { message_id: msgId },
+        }).catch(() => {});
+      }
+    };
+    doEnd().catch(() => {});
   }
 
   // ── Send ────────────────────────────────────────────────────
@@ -649,11 +481,50 @@ export class FeishuAdapter extends BaseChannelAdapter {
 
     // Rendering strategy (aligned with Openclaw):
     // - Code blocks / tables → interactive card (schema 2.0 markdown)
-    // - Other text → post (md tag)
+    // - Other text → post (msg_type: 'post') with md tag
     if (hasComplexMarkdown(text)) {
       return this.sendAsCard(message.address.chatId, text);
     }
     return this.sendAsPost(message.address.chatId, text);
+  }
+
+  async sendFileAttachment(chatId: string, attachment: GeneratedVoiceReply): Promise<SendResult> {
+    if (!this.restClient) {
+      return { ok: false, error: 'Feishu client not initialized' };
+    }
+
+    try {
+      console.log('[feishu-adapter] Uploading outbound file attachment:', attachment.fileName, attachment.mimeType, attachment.data.length);
+      const upload = await this.restClient.im.file.create({
+        data: {
+          file_type: this.resolveUploadFileType(attachment.fileName, attachment.mimeType),
+          file_name: attachment.fileName,
+          file: attachment.data,
+        },
+      });
+
+      if (!upload?.file_key) {
+        return { ok: false, error: 'Feishu file upload failed' };
+      }
+      console.log('[feishu-adapter] Outbound file uploaded:', upload.file_key);
+
+      const sent = await this.restClient.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'file',
+          content: JSON.stringify({ file_key: upload.file_key }),
+        },
+      });
+
+      if (sent?.data?.message_id) {
+        console.log('[feishu-adapter] Outbound file message sent:', sent.data.message_id);
+        return { ok: true, messageId: sent.data.message_id };
+      }
+      return { ok: false, error: sent?.msg || 'Feishu file send failed' };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Feishu file send failed' };
+    }
   }
 
   /**
@@ -732,96 +603,74 @@ export class FeishuAdapter extends BaseChannelAdapter {
   // ── Permission card (with real action buttons) ─────────────
 
   /**
-   * Send a permission card with real Feishu card action buttons.
-   * Button clicks trigger card.action.trigger events handled by handleCardAction().
-   * Falls back to text-based /perm commands if button card fails.
+   * Send a permission card with standard Feishu card buttons.
+   * Each button carries a structured `value` payload which is consumed by
+   * the card.action.trigger callback handler.
    */
   private async sendPermissionCard(
     chatId: string,
     text: string,
-    inlineButtons: import('../types.js').InlineButton[][],
+    inlineButtons: import('../types').InlineButton[][],
   ): Promise<SendResult> {
     if (!this.restClient) {
       return { ok: false, error: 'Feishu client not initialized' };
     }
 
-    // Convert HTML text from permission-broker to Feishu markdown.
-    // permission-broker sends HTML (<b>, <code>, <pre>, &amp; entities)
-    // but Feishu card markdown elements don't understand HTML.
-    const mdText = text
-      .replace(/<b>(.*?)<\/b>/gi, '**$1**')
-      .replace(/<code>(.*?)<\/code>/gi, '`$1`')
-      .replace(/<pre>([\s\S]*?)<\/pre>/gi, '```\n$1\n```')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"');
+    // Build button data and command text
+    const permButtons: Array<{
+      text: string;
+      command: string;
+      type: 'primary' | 'default' | 'danger';
+      callbackData: string;
+    }> = [];
+    const permCommands: string[] = [];
 
-    // Extract permissionRequestId from the first button's callback data
-    const firstBtn = inlineButtons.flat()[0];
-    const permId = firstBtn?.callbackData?.startsWith('perm:')
-      ? firstBtn.callbackData.split(':').slice(2).join(':')
-      : '';
-
-    if (permId) {
-      // Use real card action buttons
-      const cardJson = buildPermissionButtonCard(mdText, permId, chatId);
-
-      try {
-        const res = await this.restClient.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'interactive',
-            content: cardJson,
-          },
-        });
-        if (res?.data?.message_id) {
-          return { ok: true, messageId: res.data.message_id };
-        }
-        console.warn('[feishu-adapter] Permission button card send failed:', JSON.stringify({ code: (res as any)?.code, msg: res?.msg }));
-      } catch (err) {
-        console.warn('[feishu-adapter] Permission button card error, falling back to text:', err instanceof Error ? err.message : err);
-      }
-    }
-
-    // Fallback: text-based permission commands (same as before, for backward compat)
-    const permCommands = inlineButtons.flat().map((btn) => {
+    inlineButtons.flat().forEach((btn) => {
       if (btn.callbackData.startsWith('perm:')) {
         const parts = btn.callbackData.split(':');
         const action = parts[1];
-        const id = parts.slice(2).join(':');
-        return `\`/perm ${action} ${id}\``;
+        const permId = parts.slice(2).join(':');
+        const command = `/perm ${action} ${permId}`;
+
+        permCommands.push(`\`${command}\``);
+
+        // Map button styles
+        let buttonType: 'primary' | 'default' | 'danger' = 'default';
+        if (action === 'allow') buttonType = 'primary';
+        if (action === 'deny') buttonType = 'danger';
+
+        permButtons.push({ text: btn.text, command, type: buttonType, callbackData: btn.callbackData });
       }
-      return btn.text;
     });
 
-    const cardContent = [
-      mdText,
-      '',
-      '---',
-      '**Reply:**',
-      '`1` - Allow once',
-      '`2` - Allow session',
-      '`3` - Deny',
-      '',
-      'Or use full commands:',
-      ...permCommands,
-    ].join('\n');
+    const buttonElements = permButtons.map((btn) => ({
+      tag: 'button',
+      text: { tag: 'plain_text', content: btn.text },
+      type: btn.type,
+      value: {
+        callbackData: btn.callbackData,
+        chatId,
+      },
+    }));
 
+    // Use the classic interactive-card shape (`config/header/elements`).
+    // The current Feishu API rejects `tag: action` inside schema 2.0 cards.
     const cardJson = JSON.stringify({
-      schema: '2.0',
-      config: { wide_screen_mode: true },
+      config: { wide_screen_mode: true, update_multi: true },
       header: {
         template: 'orange',
         title: { tag: 'plain_text', content: '🔐 Permission Required' },
       },
-      body: {
-        elements: [
-          { tag: 'markdown', content: cardContent },
-        ],
-      },
+      elements: [
+        { tag: 'markdown', content: text },
+        { tag: 'hr' },
+        ...(buttonElements.length > 0 ? [{
+          tag: 'action',
+          actions: buttonElements,
+        }] : []),
+        { tag: 'hr' },
+        { tag: 'markdown', content: '**Fallback: copy & send one of these commands:**\n' + permCommands.join('\n') },
+      ],
     });
 
     try {
@@ -836,20 +685,20 @@ export class FeishuAdapter extends BaseChannelAdapter {
       if (res?.data?.message_id) {
         return { ok: true, messageId: res.data.message_id };
       }
-      console.warn('[feishu-adapter] Fallback card also failed:', res?.msg);
+      console.warn('[feishu-adapter] Permission card send failed:', res?.msg);
     } catch (err) {
-      console.warn('[feishu-adapter] Fallback card error, sending plain text:', err instanceof Error ? err.message : err);
+      console.warn('[feishu-adapter] Permission card error:', err instanceof Error ? err.message : err);
     }
 
-    // Last resort: plain text message (works even without card permissions)
-    const plainText = [
-      mdText,
-      '',
-      '---',
-      'Reply: 1 = Allow once | 2 = Allow session | 3 = Deny',
-      '',
-      ...permCommands,
-    ].join('\n');
+    // Fallback: plain text
+    const plainCommands = inlineButtons.flat().map((btn) => {
+      if (btn.callbackData.startsWith('perm:')) {
+        const parts = btn.callbackData.split(':');
+        return `/perm ${parts[1]} ${parts.slice(2).join(':')}`;
+      }
+      return btn.text;
+    });
+    const fallbackText = text + '\n\nReply with:\n' + plainCommands.join('\n');
 
     try {
       const res = await this.restClient.im.message.create({
@@ -857,7 +706,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
         data: {
           receive_id: chatId,
           msg_type: 'text',
-          content: JSON.stringify({ text: plainText }),
+          content: JSON.stringify({ text: fallbackText }),
         },
       });
       if (res?.data?.message_id) {
@@ -867,6 +716,18 @@ export class FeishuAdapter extends BaseChannelAdapter {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Send failed' };
     }
+  }
+
+  private resolveUploadFileType(fileName: string, mimeType: string): 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream' {
+    const lowerName = fileName.toLowerCase();
+    const lowerMime = mimeType.toLowerCase();
+    if (lowerName.endsWith('.opus') || lowerMime.includes('opus')) return 'opus';
+    if (lowerName.endsWith('.mp4') || lowerMime === 'video/mp4') return 'mp4';
+    if (lowerName.endsWith('.pdf') || lowerMime === 'application/pdf') return 'pdf';
+    if (lowerName.endsWith('.doc') || lowerName.endsWith('.docx')) return 'doc';
+    if (lowerName.endsWith('.xls') || lowerName.endsWith('.xlsx')) return 'xls';
+    if (lowerName.endsWith('.ppt') || lowerName.endsWith('.pptx')) return 'ppt';
+    return 'stream';
   }
 
   // ── Config & Auth ───────────────────────────────────────────
@@ -882,6 +743,19 @@ export class FeishuAdapter extends BaseChannelAdapter {
     if (!appSecret) return 'bridge_feishu_app_secret not configured';
 
     return null;
+  }
+
+  private resolveDomain(): lark.Domain {
+    const domainSetting = (getBridgeContext().store.getSetting('bridge_feishu_domain') || 'feishu').toLowerCase();
+    return domainSetting.includes('lark')
+      ? lark.Domain.Lark
+      : lark.Domain.Feishu;
+  }
+
+  private resolveDomainBase(): string {
+    return this.resolveDomain() === lark.Domain.Lark
+      ? 'https://open.larksuite.com'
+      : 'https://open.feishu.cn';
   }
 
   isAuthorized(userId: string, chatId: string): boolean {
@@ -911,6 +785,143 @@ export class FeishuAdapter extends BaseChannelAdapter {
         '[feishu-adapter] Unhandled error in event handler:',
         err instanceof Error ? err.stack || err.message : err,
       );
+    }
+  }
+
+  private async handleCardActionEvent(
+    data: FeishuCardActionEventData,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const value = data.action?.value;
+      const callbackData = typeof value?.callbackData === 'string' ? value.callbackData : '';
+      const chatId = typeof value?.chatId === 'string' ? value.chatId : '';
+
+      if (!callbackData || !chatId) {
+        console.warn('[feishu-adapter] Ignoring card action without callbackData/chatId');
+        return undefined;
+      }
+
+      const handled = broker.handlePermissionCallback(
+        callbackData,
+        chatId,
+        data.open_message_id,
+      );
+
+      const [, , permissionId = ''] = callbackData.split(':');
+      const link = permissionId
+        ? getBridgeContext().store.getPermissionLink(permissionId)
+        : null;
+      const targetMessageId = link?.messageId || data.open_message_id;
+      const resultCard = this.buildPermissionResultCard(callbackData, handled);
+
+      if (targetMessageId) {
+        this.schedulePermissionResultCardPatch(targetMessageId, resultCard);
+      }
+
+      if (!handled) {
+        console.warn('[feishu-adapter] Permission card action was not accepted:', callbackData);
+      }
+      // Let Feishu show its default click acknowledgement. We update the
+      // original card asynchronously to avoid racing the interaction callback.
+      return undefined;
+    } catch (err) {
+      console.error(
+        '[feishu-adapter] Unhandled error in card action handler:',
+        err instanceof Error ? err.stack || err.message : err,
+      );
+      return undefined;
+    }
+  }
+
+  private buildPermissionResultCard(
+    callbackData: string,
+    handled: boolean,
+  ): Record<string, unknown> {
+    const [, action = 'unknown', permissionId = ''] = callbackData.split(':');
+    const selectedLabel = this.permissionActionLabel(action);
+    const headerTemplate = action === 'deny' ? 'red' : 'green';
+    const title = handled ? 'Permission Resolved' : 'Permission Already Handled';
+    const summary = handled
+      ? `**Selected:** ${selectedLabel}\n**Request ID:** \`${permissionId}\``
+      : `**Selection ignored:** ${selectedLabel}\nThis permission request was already handled or no longer exists.\n**Request ID:** \`${permissionId}\``;
+
+    const stateLines = [
+      this.buildResolvedButton('Allow', action === 'allow', 'primary'),
+      this.buildResolvedButton('Allow Session', action === 'allow_session', 'primary'),
+      this.buildResolvedButton('Deny', action === 'deny', 'danger'),
+    ];
+
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: {
+        template: handled ? headerTemplate : 'grey',
+        title: { tag: 'plain_text', content: title },
+      },
+      elements: [
+        { tag: 'markdown', content: summary },
+        { tag: 'hr' },
+        {
+          tag: 'action',
+          actions: stateLines,
+        },
+      ],
+    };
+  }
+
+  private async patchPermissionResultCard(
+    messageId: string,
+    card: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.restClient) return;
+    try {
+      const res = await this.restClient.im.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(card) },
+      });
+      if (res?.code === 0) {
+        console.log('[feishu-adapter] Patched permission result card:', messageId);
+        return;
+      }
+      console.warn('[feishu-adapter] Permission result card patch returned non-zero code:', res?.code, res?.msg);
+    } catch (err) {
+      console.warn('[feishu-adapter] Failed to patch permission result card:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  private schedulePermissionResultCardPatch(
+    messageId: string,
+    card: Record<string, unknown>,
+  ): void {
+    setTimeout(() => {
+      void this.patchPermissionResultCard(messageId, card);
+    }, 250);
+  }
+
+  private buildResolvedButton(
+    label: string,
+    selected: boolean,
+    selectedType: 'primary' | 'danger',
+  ): { tag: 'button'; text: { tag: 'plain_text'; content: string }; type: 'default' | 'primary' | 'danger' } {
+    return {
+      tag: 'button',
+      text: {
+        tag: 'plain_text',
+        content: selected ? `${label} Selected` : `${label} Disabled`,
+      },
+      type: selected ? selectedType : 'default',
+    };
+  }
+
+  private permissionActionLabel(action: string): string {
+    switch (action) {
+      case 'allow':
+        return 'Allow';
+      case 'allow_session':
+        return 'Allow Session';
+      case 'deny':
+        return 'Deny';
+      default:
+        return action;
     }
   }
 
@@ -1018,6 +1029,14 @@ export class FeishuAdapter extends BaseChannelAdapter {
         const attachment = await this.downloadResource(msg.message_id, fileKey, resourceType);
         if (attachment) {
           attachments.push(attachment);
+          if (messageType === 'audio') {
+            const transcription = await this.transcribeAudioAttachment(attachment);
+            if (transcription.transcript) {
+              text = this.mergeTranscriptText(text, transcription.transcript);
+            } else if (!text.trim()) {
+              text = transcription.failureText || this.buildAudioTranscriptionFailureText(attachment);
+            }
+          }
         } else {
           text = `[${messageType} download failed]`;
           try {
@@ -1042,6 +1061,10 @@ export class FeishuAdapter extends BaseChannelAdapter {
         }
         // Don't add fallback text for individual post images — the text already carries context
       }
+    } else if (messageType === 'merge_forward') {
+      const result = await this.parseMergeForwardContent(msg.message_id);
+      text = result.text;
+      attachments.push(...result.attachments);
     } else {
       // Unsupported type — log and skip
       console.log(`[feishu-adapter] Unsupported message type: ${messageType}, msgId: ${msg.message_id}`);
@@ -1105,6 +1128,189 @@ export class FeishuAdapter extends BaseChannelAdapter {
     } catch { /* best effort */ }
 
     this.enqueue(inbound);
+  }
+
+  // ── Merge-forward support ───────────────────────────────────
+
+  /** Max entries in the sender name cache. */
+  private static readonly SENDER_CACHE_MAX = 500;
+
+  /**
+   * Resolve a Feishu open_id to a human-readable display name.
+   * Uses an in-memory LRU cache and the contact.v3.user.get API.
+   * Returns null when the name cannot be determined.
+   */
+  private async resolveUserName(openId: string): Promise<string | null> {
+    if (this.senderNameCache.has(openId)) {
+      return this.senderNameCache.get(openId)!;
+    }
+
+    if (!this.contactPermissionAvailable || !this.restClient) {
+      this.senderNameCache.set(openId, null);
+      this.evictSenderCacheIfNeeded();
+      return null;
+    }
+
+    try {
+      const res = await this.restClient.contact.v3.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const user = (res as any)?.data?.user;
+      const name: string | null = user?.name || null;
+      this.senderNameCache.set(openId, name);
+      this.evictSenderCacheIfNeeded();
+      return name;
+    } catch (err) {
+      // Permission denied (code 99991401 / 99991403) → disable further attempts
+      const code = (err as { code?: number })?.code;
+      if (code === 99991401 || code === 99991403) {
+        console.warn('[feishu-adapter] Contact permission unavailable, disabling name resolution');
+        this.contactPermissionAvailable = false;
+      }
+      this.senderNameCache.set(openId, null);
+      this.evictSenderCacheIfNeeded();
+      return null;
+    }
+  }
+
+  private evictSenderCacheIfNeeded(): void {
+    if (this.senderNameCache.size <= FeishuAdapter.SENDER_CACHE_MAX) return;
+    const excess = this.senderNameCache.size - FeishuAdapter.SENDER_CACHE_MAX;
+    let removed = 0;
+    for (const key of this.senderNameCache.keys()) {
+      if (removed >= excess) break;
+      this.senderNameCache.delete(key);
+      removed++;
+    }
+  }
+
+  /**
+   * Parse a merge_forward message: fetch child messages via the get API,
+   * resolve sender names, and format as a readable conversation block.
+   *
+   * Feishu docs: call GET /im/v1/messages/{message_id} with the merge_forward
+   * message_id → returns items[] where child messages have upper_message_id
+   * pointing to the parent.
+   */
+  private async parseMergeForwardContent(
+    messageId: string,
+  ): Promise<{ text: string; attachments: FileAttachment[] }> {
+    if (!this.restClient) {
+      return { text: '[合并转发消息：客户端未初始化]', attachments: [] };
+    }
+
+    try {
+      // GET /im/v1/messages/{message_id} returns the merge_forward message
+      // itself plus all child messages in data.items[].
+      const res = await this.restClient.im.message.get({
+        path: { message_id: messageId },
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allItems: any[] = (res as any)?.data?.items || [];
+
+      // Filter: only keep child messages whose upper_message_id matches
+      // the merge_forward parent. The first item is usually the parent itself.
+      const items = allItems.filter(
+        (item: any) => item.upper_message_id === messageId,
+      );
+
+      if (items.length === 0) {
+        return { text: '[合并转发消息：无法获取子消息内容]', attachments: [] };
+      }
+
+      const lines: string[] = [];
+      const attachments: FileAttachment[] = [];
+      const unknownSenderIds = new Set<string>();
+
+      for (const item of items) {
+        // The get API returns sender as { sender_id: { open_id, ... }, sender_type }
+        const senderId: string = item.sender?.sender_id?.open_id
+          || item.sender?.sender_id?.user_id
+          || item.sender?.id
+          || '';
+        const senderType: string = item.sender?.sender_type || '';
+        const msgType: string = item.msg_type || '';
+        const body: string = typeof item.body?.content === 'string' ? item.body.content : '';
+        const childMsgId: string = item.message_id || '';
+
+        // Resolve sender display name
+        let senderLabel: string;
+        if (senderType === 'bot') {
+          senderLabel = '(bot)';
+        } else if (senderId) {
+          const name = await this.resolveUserName(senderId);
+          if (name) {
+            senderLabel = name;
+          } else {
+            senderLabel = senderId;
+            unknownSenderIds.add(senderId);
+          }
+        } else {
+          senderLabel = '(unknown)';
+        }
+
+        // Parse content by message type
+        let content: string;
+        if (msgType === 'text') {
+          content = this.parseTextContent(body);
+        } else if (msgType === 'post') {
+          const { extractedText, imageKeys } = this.parsePostContent(body);
+          content = extractedText || '[富文本]';
+          for (const key of imageKeys) {
+            if (childMsgId) {
+              const att = await this.downloadResource(childMsgId, key, 'image');
+              if (att) attachments.push(att);
+            }
+          }
+        } else if (msgType === 'image') {
+          content = '[图片]';
+          const fileKey = this.extractFileKey(body);
+          if (fileKey && childMsgId) {
+            const att = await this.downloadResource(childMsgId, fileKey, 'image');
+            if (att) attachments.push(att);
+          }
+        } else if (msgType === 'file') {
+          content = '[文件]';
+        } else if (msgType === 'audio') {
+          content = '[语音]';
+        } else if (msgType === 'video' || msgType === 'media') {
+          content = '[视频]';
+        } else if (msgType === 'sticker') {
+          content = '[表情]';
+        } else if (msgType === 'merge_forward') {
+          content = '[嵌套合并转发]';
+        } else {
+          content = `[${msgType || '未知类型'}]`;
+        }
+
+        lines.push(`${senderLabel}: ${content}`);
+      }
+
+      let text = '--- 以下是一组合并转发的聊天记录 ---\n'
+        + lines.join('\n')
+        + '\n--- 合并转发结束 ---';
+
+      // If contact permission is unavailable, hint the user
+      if (unknownSenderIds.size > 0 && !this.contactPermissionAvailable) {
+        const ids = Array.from(unknownSenderIds).join(', ');
+        text += `\n(无法自动获取发送者姓名，应用可能缺少通讯录权限。如果你知道这些 ID 对应的人，请告诉我：${ids})`;
+      }
+
+      return { text, attachments };
+    } catch (err) {
+      console.error(
+        '[feishu-adapter] Failed to parse merge_forward content:',
+        err instanceof Error ? err.stack || err.message : err,
+      );
+      return {
+        text: '[合并转发消息：获取内容失败，请尝试直接复制文字发送]',
+        attachments: [],
+      };
+    }
   }
 
   // ── Content parsing ─────────────────────────────────────────
@@ -1187,21 +1393,14 @@ export class FeishuAdapter extends BaseChannelAdapter {
         ? 'https://open.larksuite.com'
         : 'https://open.feishu.cn';
 
-      const tokenRes = await fetch(`${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      const tokenData: any = await tokenRes.json();
-      if (!tokenData.tenant_access_token) {
-        console.warn('[feishu-adapter] Failed to get tenant access token');
+      const token = await this.getTenantAccessToken();
+      if (!token) {
         return;
       }
 
       const botRes = await fetch(`${baseUrl}/open-apis/bot/v3/info/`, {
         method: 'GET',
-        headers: { Authorization: `Bearer ${tokenData.tenant_access_token}` },
+        headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10_000),
       });
       const botData: any = await botRes.json();
@@ -1242,6 +1441,385 @@ export class FeishuAdapter extends BaseChannelAdapter {
   private stripMentionMarkers(text: string): string {
     // Feishu uses @_user_N placeholders for mentions
     return text.replace(/@_user_\d+/g, '').trim();
+  }
+
+  private isAudioTranscriptionEnabled(): boolean {
+    return getBridgeContext().store.getSetting('bridge_feishu_audio_transcribe') !== 'false';
+  }
+
+  private mergeTranscriptText(text: string, transcript: string): string {
+    const cleanedTranscript = transcript.trim();
+    if (!cleanedTranscript) return text;
+    if (!text.trim()) return `[Voice transcript]\n${cleanedTranscript}`;
+    return `${text.trim()}\n\n[Voice transcript]\n${cleanedTranscript}`;
+  }
+
+  private async transcribeAudioAttachment(
+    attachment: FileAttachment,
+  ): Promise<{ transcript: string | null; failureText?: string }> {
+    if (!this.isAudioTranscriptionEnabled()) {
+      return { transcript: null };
+    }
+
+    try {
+      const speech = this.toSpeechPayload(attachment);
+      if (!speech) {
+        console.warn('[feishu-adapter] Audio transcription skipped: unsupported audio format or transcoder unavailable');
+        return {
+          transcript: null,
+          failureText: this.buildAudioTranscriptionFailureText(attachment),
+        };
+      }
+
+      const token = await this.getTenantAccessToken();
+      if (!token) {
+        console.warn('[feishu-adapter] Audio transcription skipped: tenant_access_token unavailable');
+        return {
+          transcript: null,
+          failureText: '[voice message received but bridge transcription failed: tenant access token unavailable]',
+        };
+      }
+
+      const response = await fetch(`${this.resolveDomainBase()}/open-apis/speech_to_text/v1/speech/file_recognize`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          speech: { speech },
+          config: {
+            file_id: this.makeSpeechFileId(),
+            format: 'pcm',
+            engine_type: '16k_auto',
+          },
+        }),
+      });
+
+      const payload = await response.json() as {
+        code?: number;
+        msg?: string;
+        data?: Record<string, unknown>;
+      };
+      if (!response.ok || payload.code !== 0) {
+        console.warn('[feishu-adapter] Audio transcription failed:', payload.msg || response.statusText);
+        const whisperFallback = await this.transcribeWithOpenAIWhisper(attachment);
+        if (whisperFallback) {
+          return { transcript: whisperFallback };
+        }
+        return {
+          transcript: null,
+          failureText: this.buildApiTranscriptionFailureText(payload.msg),
+        };
+      }
+
+      return {
+        transcript: this.extractTranscript(payload.data),
+      };
+    } catch (err) {
+      console.warn('[feishu-adapter] Audio transcription error:', err instanceof Error ? err.message : err);
+      return {
+        transcript: null,
+        failureText: '[voice message received but bridge transcription failed: speech-to-text request errored]',
+      };
+    }
+  }
+
+  private buildAudioTranscriptionFailureText(attachment: FileAttachment): string {
+    const name = attachment.name.toLowerCase();
+    const type = attachment.type.toLowerCase();
+    const explicit = (getBridgeContext().store.getSetting('bridge_audio_transcoder') || '').trim();
+    const ffmpegAvailable = (explicit && this.commandExists(explicit))
+      || this.commandExists('ffmpeg')
+      || this.commandExists('/opt/homebrew/bin/ffmpeg');
+
+    if ((type === 'audio/ogg' || name.endsWith('.ogg') || name.endsWith('.opus')) && !ffmpegAvailable) {
+      return '[voice message received but bridge transcription failed: Ogg/Opus audio requires ffmpeg on the bridge host]';
+    }
+
+    return '[voice message received but transcription failed]';
+  }
+
+  private buildApiTranscriptionFailureText(message: string | undefined): string {
+    const text = (message || '').trim();
+    if (text.includes('speech_to_text:speech')) {
+      return '[voice message received but bridge transcription failed: Feishu app is missing the speech_to_text:speech permission]';
+    }
+    if (text.includes('request trigger frequency limit')) {
+      if (this.getOpenAIApiKey()) {
+        return '[voice message received but bridge transcription failed: Feishu STT is rate-limited and the OpenAI Whisper fallback also failed]';
+      }
+      return '[voice message received but bridge transcription failed: Feishu STT is rate-limited. To enable OpenAI Whisper fallback, set CTI_OPENAI_API_KEY in the bridge config.]';
+    }
+    if (text) {
+      return `[voice message received but bridge transcription failed: ${text}]`;
+    }
+    return '[voice message received but transcription failed]';
+  }
+
+  private getOpenAIApiKey(): string {
+    return (getBridgeContext().store.getSetting('bridge_openai_api_key') || '').trim();
+  }
+
+  private async transcribeWithOpenAIWhisper(attachment: FileAttachment): Promise<string | null> {
+    const apiKey = this.getOpenAIApiKey();
+    if (!apiKey) return null;
+
+    try {
+      const bytes = Buffer.from(attachment.data, 'base64');
+      const form = new FormData();
+      form.set('model', 'whisper-1');
+      form.set('response_format', 'json');
+      form.set('file', new Blob([bytes], { type: attachment.type || 'application/octet-stream' }), attachment.name);
+
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: form,
+      });
+
+      const payload = await response.json() as {
+        text?: string;
+        error?: { message?: string };
+      };
+
+      if (!response.ok) {
+        console.warn('[feishu-adapter] OpenAI Whisper fallback failed:', payload.error?.message || response.statusText);
+        return null;
+      }
+
+      return typeof payload.text === 'string' && payload.text.trim()
+        ? payload.text.trim()
+        : null;
+    } catch (err) {
+      console.warn('[feishu-adapter] OpenAI Whisper fallback error:', err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  private makeSpeechFileId(): string {
+    return crypto.randomBytes(8).toString('hex');
+  }
+
+  private extractTranscript(data: Record<string, unknown> | undefined): string | null {
+    if (!data) return null;
+    const directText = [
+      data.recognition_text,
+      data.text,
+      data.result,
+      data.transcript,
+    ].find((value) => typeof value === 'string' && value.trim().length > 0);
+    if (typeof directText === 'string') return directText.trim();
+
+    const recursive = (value: unknown): string | null => {
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (Array.isArray(value)) {
+        const parts = value.map(item => recursive(item)).filter((item): item is string => !!item);
+        return parts.length > 0 ? parts.join('\n') : null;
+      }
+      if (value && typeof value === 'object') {
+        for (const nested of Object.values(value as Record<string, unknown>)) {
+          const found = recursive(nested);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    return recursive(data);
+  }
+
+  private async getTenantAccessToken(): Promise<string | null> {
+    if (this.tenantAccessToken && Date.now() < this.tenantAccessTokenExpiresAt - 60_000) {
+      return this.tenantAccessToken;
+    }
+
+    const appId = getBridgeContext().store.getSetting('bridge_feishu_app_id') || '';
+    const appSecret = getBridgeContext().store.getSetting('bridge_feishu_app_secret') || '';
+    if (!appId || !appSecret) return null;
+
+    const tokenRes = await fetch(`${this.resolveDomainBase()}/open-apis/auth/v3/tenant_access_token/internal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+    });
+    const tokenData = await tokenRes.json() as {
+      code?: number;
+      msg?: string;
+      tenant_access_token?: string;
+      expire?: number;
+      expire_in?: number;
+    };
+
+    if (!tokenRes.ok || tokenData.code !== 0 || !tokenData.tenant_access_token) {
+      console.warn('[feishu-adapter] Failed to fetch tenant access token:', tokenData.msg || tokenRes.statusText);
+      return null;
+    }
+
+    const expiresInSeconds = typeof tokenData.expire === 'number'
+      ? tokenData.expire
+      : typeof tokenData.expire_in === 'number'
+        ? tokenData.expire_in
+        : 7200;
+    this.tenantAccessToken = tokenData.tenant_access_token;
+    this.tenantAccessTokenExpiresAt = Date.now() + expiresInSeconds * 1000;
+    return this.tenantAccessToken;
+  }
+
+  private toSpeechPayload(attachment: FileAttachment): string | null {
+    const bytes = Buffer.from(attachment.data, 'base64');
+    if (this.isRawPcmAttachment(attachment)) {
+      return bytes.toString('base64');
+    }
+
+    const wavData = this.extractPcmFromWav(bytes);
+    if (wavData) {
+      return wavData.toString('base64');
+    }
+
+    const transcoded = this.transcodeAudioToPcm(bytes, attachment);
+    return transcoded ? transcoded.toString('base64') : null;
+  }
+
+  private isRawPcmAttachment(attachment: FileAttachment): boolean {
+    const name = attachment.name.toLowerCase();
+    const mime = attachment.type.toLowerCase();
+    return mime === 'audio/pcm'
+      || mime === 'audio/raw'
+      || mime === 'audio/l16'
+      || name.endsWith('.pcm')
+      || name.endsWith('.raw');
+  }
+
+  private extractPcmFromWav(bytes: Buffer): Buffer | null {
+    if (bytes.byteLength < WAV_HEADER_BYTES) return null;
+    if (bytes.subarray(0, 4).toString('ascii') !== 'RIFF' || bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      return null;
+    }
+
+    let offset = 12;
+    let audioFormat = 0;
+    let channels = 0;
+    let sampleRate = 0;
+    let bitsPerSample = 0;
+    let dataChunk: Buffer | null = null;
+
+    while (offset + 8 <= bytes.length) {
+      const chunkId = bytes.subarray(offset, offset + 4).toString('ascii');
+      const chunkSize = bytes.readUInt32LE(offset + 4);
+      const chunkStart = offset + 8;
+      const chunkEnd = chunkStart + chunkSize;
+      if (chunkEnd > bytes.length) break;
+
+      if (chunkId === 'fmt ' && chunkSize >= 16) {
+        audioFormat = bytes.readUInt16LE(chunkStart);
+        channels = bytes.readUInt16LE(chunkStart + 2);
+        sampleRate = bytes.readUInt32LE(chunkStart + 4);
+        bitsPerSample = bytes.readUInt16LE(chunkStart + 14);
+      } else if (chunkId === 'data') {
+        dataChunk = bytes.subarray(chunkStart, chunkEnd);
+      }
+
+      offset = chunkEnd + (chunkSize % 2);
+    }
+
+    if (audioFormat !== 1 || channels !== 1 || sampleRate !== PCM_SAMPLE_RATE || bitsPerSample !== 16) {
+      return null;
+    }
+    return dataChunk;
+  }
+
+  private transcodeAudioToPcm(bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const explicitTranscoder = getBridgeContext().store.getSetting('bridge_audio_transcoder') || '';
+    const transcoders = explicitTranscoder ? [explicitTranscoder] : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/bin/afconvert'];
+
+    for (const transcoder of transcoders) {
+      const trimmed = transcoder.trim();
+      if (!trimmed || !this.commandExists(trimmed)) continue;
+      const output = trimmed.endsWith('afconvert')
+        ? this.transcodeWithAfconvert(trimmed, bytes, attachment)
+        : this.transcodeWithFfmpeg(trimmed, bytes, attachment);
+      if (output) return output;
+    }
+    return null;
+  }
+
+  private commandExists(command: string): boolean {
+    if (path.isAbsolute(command)) {
+      return fs.existsSync(command);
+    }
+    try {
+      execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], { stdio: 'ignore', timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private transcodeWithFfmpeg(command: string, bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cti-feishu-audio-'));
+    const inputPath = path.join(tmpDir, this.makeTempAudioName(attachment));
+    const outputPath = path.join(tmpDir, 'output.pcm');
+    try {
+      fs.writeFileSync(inputPath, bytes);
+      execFileSync(command, [
+        '-nostdin', '-y', '-i', inputPath,
+        '-f', 's16le',
+        '-acodec', 'pcm_s16le',
+        '-ac', '1',
+        '-ar', String(PCM_SAMPLE_RATE),
+        outputPath,
+      ], { stdio: 'ignore', timeout: 15_000 });
+      return fs.readFileSync(outputPath);
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  private transcodeWithAfconvert(command: string, bytes: Buffer, attachment: FileAttachment): Buffer | null {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cti-feishu-audio-'));
+    const inputPath = path.join(tmpDir, this.makeTempAudioName(attachment));
+    const outputPath = path.join(tmpDir, 'output.wav');
+    try {
+      fs.writeFileSync(inputPath, bytes);
+      execFileSync(command, [
+        '-f', 'WAVE',
+        '-d', `LEI16@${PCM_SAMPLE_RATE}`,
+        '-c', '1',
+        inputPath,
+        outputPath,
+      ], { stdio: 'ignore', timeout: 15_000 });
+      return this.extractPcmFromWav(fs.readFileSync(outputPath));
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  private makeTempAudioName(attachment: FileAttachment): string {
+    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (safeName.includes('.')) return safeName;
+
+    switch (attachment.type) {
+      case 'audio/ogg':
+        return `${safeName}.ogg`;
+      case 'audio/mpeg':
+        return `${safeName}.mp3`;
+      case 'audio/mp4':
+        return `${safeName}.m4a`;
+      case 'audio/wav':
+      case 'audio/x-wav':
+        return `${safeName}.wav`;
+      case 'audio/pcm':
+        return `${safeName}.pcm`;
+      default:
+        return `${safeName}.bin`;
+    }
   }
 
   // ── Resource download ───────────────────────────────────────
@@ -1320,17 +1898,16 @@ export class FeishuAdapter extends BaseChannelAdapter {
       }
 
       const base64 = buffer.toString('base64');
-      const id = crypto.randomUUID();
-      const mimeType = MIME_BY_TYPE[resourceType] || 'application/octet-stream';
-      const ext = resourceType === 'image' ? 'png'
-        : resourceType === 'audio' ? 'ogg'
-        : resourceType === 'video' ? 'mp4'
-        : 'bin';
+      const headerMime = res.headers?.['content-type'] || '';
+      const detectedMime = detectMimeFromBytes(buffer);
+      // Prefer magic-bytes detection, then HTTP header, then fallback by resource type
+      const mimeType = detectedMime || (headerMime && !headerMime.includes('octet-stream') ? headerMime : null) || MIME_BY_TYPE[resourceType] || 'application/octet-stream';
+      const ext = MIME_TO_EXT[mimeType] || (resourceType === 'image' ? 'png' : resourceType === 'audio' ? 'ogg' : resourceType === 'video' ? 'mp4' : 'bin');
 
-      console.log(`[feishu-adapter] Resource downloaded: ${buffer.length} bytes, key=${fileKey}`);
+      console.log(`[feishu-adapter] Resource downloaded: ${buffer.length} bytes, key=${fileKey}, mime=${mimeType} (detected=${detectedMime}, header=${headerMime})`);
 
       return {
-        id,
+        id: fileKey,
         name: `${fileKey}.${ext}`,
         type: mimeType,
         size: buffer.length,

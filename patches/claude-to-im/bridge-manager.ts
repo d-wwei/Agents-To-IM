@@ -50,6 +50,7 @@ interface StreamConfig {
 const STREAM_DEFAULTS: Record<string, StreamConfig> = {
   telegram: { intervalMs: 700, minDeltaChars: 20, maxChars: 3900 },
   discord: { intervalMs: 1500, minDeltaChars: 40, maxChars: 1900 },
+  feishu: { intervalMs: 800, minDeltaChars: 30, maxChars: 3500 },
 };
 
 const DEFAULT_TASK_WATCHDOG_MS = 12 * 60 * 1000;
@@ -668,7 +669,7 @@ async function executeBoundTask(
   };
 
   let uiEnded = false;
-  const endInFlightUi = () => {
+  const endInFlightUi = (finalText?: string) => {
     if (uiEnded) return;
     uiEnded = true;
     if (previewState) {
@@ -676,7 +677,7 @@ async function executeBoundTask(
         clearTimeout(previewState.throttleTimer);
         previewState.throttleTimer = null;
       }
-      adapter.endPreview?.(msg.address.chatId, previewState.draftId);
+      adapter.endPreview?.(msg.address.chatId, previewState.draftId, finalText);
     }
     adapter.onMessageEnd?.(msg.address.chatId);
   };
@@ -732,7 +733,15 @@ async function executeBoundTask(
     }, taskAbort.signal, msg.attachments && msg.attachments.length > 0 ? msg.attachments : undefined, onPartialText);
 
     if (result.responseText) {
-      await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+      // If preview was active, finalize the card in place (patch with final content,
+      // remove "Generating..." footer). The card IS the final output — skip delivery.
+      // If preview wasn't active or degraded, deliver normally.
+      if (previewState && !previewState.degraded && previewState.lastSentText) {
+        endInFlightUi(result.responseText);
+      } else {
+        endInFlightUi();
+        await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+      }
       if (wantsVoiceReply(input.rawText)) {
         const voiceReply = await prepareVoiceReply(result.responseText);
         console.log('[bridge-manager] Voice reply preparation status:', voiceReply.status);

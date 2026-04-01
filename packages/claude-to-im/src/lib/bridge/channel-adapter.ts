@@ -92,10 +92,12 @@ export abstract class BaseChannelAdapter {
   sendPreview?(_chatId: string, _text: string, _draftId: number): Promise<'sent' | 'skip' | 'degrade'>;
 
   /**
-   * Signal the end of a preview cycle. The final message is sent via the
-   * normal delivery path, so this is typically a no-op.
+   * Signal the end of a preview cycle.
+   * If finalText is provided, the adapter may patch the preview in place
+   * (e.g., Feishu patches the card to remove the "Generating..." footer).
+   * Adapters that don't support in-place finalization simply ignore finalText.
    */
-  endPreview?(_chatId: string, _draftId: number): void;
+  endPreview?(_chatId: string, _draftId: number, _finalText?: string): void;
 
   /**
    * Called on each text SSE event during streaming. Adapter can use this

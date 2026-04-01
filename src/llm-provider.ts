@@ -664,13 +664,15 @@ export interface StreamState {
 
 // ── V2 Session Pool ──
 
-const SESSION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes
+const SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;  // 24h since last user interaction
+const SESSION_MAX_LIFETIME_MS = 72 * 60 * 60 * 1000;  // 72h absolute max — force refresh
 const SESSION_POOL_MAX = 10;
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 60 seconds
 
 interface ManagedSession {
   session: SDKSession;
   workingDirectory: string | undefined;
+  createdAt: number;
   lastUsedAt: number;
   busy: boolean;
   closed: boolean;
@@ -713,6 +715,7 @@ export class SDKLLMProvider implements LLMProvider {
 
     const sessionOptions: Record<string, unknown> = {
       model: 'claude-sonnet-4-20250514',
+      includePartialMessages: true,
       env: cleanEnv,
       canUseTool: async (
         toolName: string,
@@ -770,6 +773,7 @@ export class SDKLLMProvider implements LLMProvider {
     const managed: ManagedSession = {
       session,
       workingDirectory,
+      createdAt: Date.now(),
       lastUsedAt: Date.now(),
       busy: false,
       closed: false,
@@ -808,13 +812,46 @@ export class SDKLLMProvider implements LLMProvider {
     this.cleanupTimer = setInterval(() => {
       const now = Date.now();
       for (const [id, managed] of this.sessionPool) {
-        if (!managed.busy && (now - managed.lastUsedAt) > SESSION_IDLE_TIMEOUT_MS) {
-          console.log(`[llm-provider] Cleaning up idle V2 session: ${id}`);
+        if (managed.busy) continue;
+        const idleExpired = (now - managed.lastUsedAt) > SESSION_IDLE_TIMEOUT_MS;
+        const lifetimeExpired = (now - managed.createdAt) > SESSION_MAX_LIFETIME_MS;
+        if (idleExpired || lifetimeExpired) {
+          const reason = lifetimeExpired ? 'max lifetime (72h)' : 'idle (24h)';
+          console.log(`[llm-provider] Recycling V2 session ${id}: ${reason}`);
+          const workDir = managed.workingDirectory;
           this.destroySession(id);
+          // Auto-recreate: immediately spawn a fresh session so next message has zero cold start
+          try {
+            this.createPooledSession(id, workDir);
+            console.log(`[llm-provider] Auto-recreated V2 session: ${id}`);
+          } catch (err) {
+            console.warn(`[llm-provider] Auto-recreate failed for ${id}:`, err instanceof Error ? err.message : err);
+            // Fall back to deferred — will be created lazily on next message
+            this.deferredSessions.set(id, { workingDirectory: workDir });
+          }
         }
       }
     }, CLEANUP_INTERVAL_MS);
     this.cleanupTimer.unref();
+  }
+
+  /**
+   * Eagerly spawn a V2 session so the first message has zero cold start.
+   * Called at bridge startup for existing bindings.
+   * Safe to call fire-and-forget; never throws.
+   */
+  prewarmSession(sdkSessionId: string, workingDirectory: string): void {
+    if (this.poolDisabled) return;
+    if (this.sessionPool.has(sdkSessionId)) return;
+    if (this.deferredSessions.has(sdkSessionId)) return;
+    try {
+      this.createPooledSession(sdkSessionId, workingDirectory);
+      console.log(`[llm-provider] Eagerly spawned V2 session: ${sdkSessionId}`);
+    } catch (err) {
+      console.warn(`[llm-provider] Eager spawn failed for ${sdkSessionId}:`, err instanceof Error ? err.message : err);
+      // Fallback to deferred — will be created lazily on first message
+      this.deferredSessions.set(sdkSessionId, { workingDirectory });
+    }
   }
 
   closeAll(): void {
