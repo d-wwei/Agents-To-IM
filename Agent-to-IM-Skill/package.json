@@ -1,0 +1,34 @@
+{
+  "name": "agent-to-im-skill",
+  "version": "0.1.0",
+  "description": "Claude Code Skill: Bridge IM platforms (Telegram, Discord, Feishu, QQ, WeChat) to Claude Code sessions",
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/apply-bridge-patches.mjs && node scripts/patch-sdk-streaming.mjs",
+    "build": "node scripts/apply-bridge-patches.mjs && node scripts/patch-sdk-streaming.mjs && node scripts/build.js",
+    "render:host": "node scripts/render-host-templates.mjs",
+    "typecheck": "node scripts/apply-bridge-patches.mjs && tsc --noEmit",
+    "dev": "tsx src/main.ts",
+    "weixin:login": "node --import tsx src/weixin-login.ts",
+    "test": "node scripts/apply-bridge-patches.mjs && CTI_HOME=$(mktemp -d) node --test --test-concurrency=1 --import tsx --test-timeout=15000 src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.62",
+    "agent-to-im-core": "file:./packages/agent-to-im-core",
+    "qrcode": "^1.5.4"
+  },
+  "optionalDependencies": {
+    "@openai/codex-sdk": "^0.110.0",
+    "udd-kit": "github:d-wwei/udd-kit",
+    "update-kit": "github:d-wwei/update-kit"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

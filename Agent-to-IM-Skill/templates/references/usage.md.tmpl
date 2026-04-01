@@ -1,0 +1,140 @@
+# Usage Guide
+
+This skill works with both slash-command hosts and natural-language hosts. Examples below use the current skill command; hosts without slash commands can use equivalent natural-language triggers such as "start bridge", "配置", or "诊断".
+
+## setup
+
+Interactive wizard that configures the bridge.
+
+```
+/{{SKILL_COMMAND}} setup
+```
+
+The wizard will prompt you for:
+
+1. **Channels to enable** -- Enter comma-separated values: `telegram`, `discord`, `feishu`
+2. **Platform credentials** -- Bot tokens, app IDs, and secrets for each enabled channel
+3. **Allowed users** (optional) -- Restrict which users can interact with the bot
+4. **Working directory** -- Default project directory for host-agent sessions
+5. **Model and mode** -- Claude model and interaction mode (code/plan/ask)
+
+After collecting input, the wizard validates tokens by calling each platform's API and reports results.
+
+Example interaction:
+
+```
+> /{{SKILL_COMMAND}} setup
+Which channels to enable? telegram,discord
+Enter Telegram bot token: <your-token>
+Enter Discord bot token: <your-token>
+Default working directory [/current/dir]: /Users/me/projects
+Model [claude-sonnet-4-20250514]:
+Mode [code]:
+
+Validating tokens...
+  Telegram: OK (bot @MyBotName)
+  Discord: OK (format valid)
+
+Config written to ~/.{{SKILL_COMMAND}}/config.env
+```
+
+## start
+
+Starts the bridge daemon in the background.
+
+```
+/{{SKILL_COMMAND}} start
+```
+
+The daemon process ID is stored in `~/.{{SKILL_COMMAND}}/runtime/bridge.pid`. If the daemon is already running, the command reports the existing process.
+
+If startup fails, run `/{{SKILL_COMMAND}} doctor` to diagnose issues.
+
+## stop
+
+Stops the running bridge daemon.
+
+```
+/{{SKILL_COMMAND}} stop
+```
+
+Sends SIGTERM to the daemon process and cleans up the PID file.
+
+## status
+
+Shows whether the daemon is running and basic health information.
+
+```
+/{{SKILL_COMMAND}} status
+```
+
+Output includes:
+- Running/stopped state
+- PID (if running)
+- Uptime
+- Connected channels
+
+## logs
+
+Shows recent log output from the daemon.
+
+```
+/{{SKILL_COMMAND}} logs        # Last 50 lines (default)
+/{{SKILL_COMMAND}} logs 200    # Last 200 lines
+```
+
+Logs are stored in `~/.{{SKILL_COMMAND}}/logs/` and are automatically redacted to mask secrets.
+
+## reconfigure
+
+Interactively update the current configuration.
+
+```
+/{{SKILL_COMMAND}} reconfigure
+```
+
+Displays current settings with secrets masked, then prompts for changes. After updating, you must restart the daemon for changes to take effect:
+
+```
+/{{SKILL_COMMAND}} stop
+/{{SKILL_COMMAND}} start
+```
+
+## doctor
+
+Runs diagnostic checks and reports issues.
+
+```
+/{{SKILL_COMMAND}} doctor
+```
+
+Checks performed:
+- Node.js version (>= 20 required)
+- Required host CLI availability for the selected runtime
+- Config file exists and has correct permissions
+- Required tokens are set for enabled channels
+- Token validity (API calls)
+- Daemon process health
+- Log directory writability
+
+## IM session commands
+
+Inside IM chats, the bridge also supports built-in session-management commands:
+
+```
+/lsessions
+/lsessions --all
+/switchto <session_id|name>
+/rename <new_name>
+/archive [session_id|name]
+/unarchive <session_id|name>
+```
+
+Behavior summary:
+- `/lsessions` lists active sessions; `--all` includes archived sessions
+- `/switchto` rebinds the current IM chat to a previous session by ID or assigned name
+- `/rename` assigns a friendly name to the current session
+- `/archive` stores a short summary and hides the session from the default list
+- `/unarchive` restores an archived session
+
+These commands are handled at the bridge layer, so they work consistently across Claude, Codex, and Gemini host variants.

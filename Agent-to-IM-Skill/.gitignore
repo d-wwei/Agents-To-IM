@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tgz
+.env
+config.env
+.update-kit/
+.udd/
+.DS_Store
