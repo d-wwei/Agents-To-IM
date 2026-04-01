@@ -57,12 +57,13 @@ const PHASE1_RULES: Array<{ patterns: RegExp; emoji: string }> = [
   { patterns: /你好|hi\b|hello|hey|早上好|晚上好|早安|晚安|morning|evening/i, emoji: 'WAVE' },
   { patterns: /哈哈|lol|笑|funny|有趣|搞笑|joke|段子|逗/i, emoji: 'LAUGH' },
   { patterns: /谢谢|thanks|thank you|辛苦|感谢|多谢/i, emoji: 'HEART' },
+  { patterns: /urgent|赶紧|马上|asap|挂了|炸了|紧急|立刻|crash/i, emoji: 'Fire' },
   { patterns: /帮我|请|麻烦|do\b|create|make|生成|建|搭/i, emoji: 'OnIt' },
   { patterns: /分析|看看|检查|查一下|debug|排查|诊断|investigate/i, emoji: 'SMART' },
   { patterns: /code|function|api|deploy|bug|error|报错|代码|部署|编译/i, emoji: 'StatusFlashOfInspiration' },
   { patterns: /写|总结|报告|翻译|review|文档|draft|文章/i, emoji: 'StatusReading' },
-  { patterns: /为什么|怎么理解|explain|对比|区别|原理|how|why/i, emoji: 'THINKING' },
-  { patterns: /urgent|赶紧|马上|asap|挂了|炸了|紧急|立刻|crash/i, emoji: 'Fire' },
+  { patterns: /为什么|怎么|什么|如何|explain|对比|区别|原理|how|why|吗|呢/i, emoji: 'THINKING' },
+  { patterns: /推荐|建议|选择|比较|哪个|should|suggest|recommend/i, emoji: 'THINKING' },
 ];
 
 /** Phase 2: contextual reactions based on response content (0-2 emojis). */
@@ -72,17 +73,18 @@ const PHASE2_RULES: Array<{ patterns: RegExp; emoji: string }> = [
   { patterns: /\b(warning|注意|caution|小心|风险)\b/i, emoji: 'Alarm' },
   { patterns: /\b(sorry|抱歉|unfortunately|遗憾|无法|不支持)\b/i, emoji: 'FROWN' },
   { patterns: /[😂🤣😄😆]|哈哈|笑/u, emoji: 'LOL' },
-  { patterns: /\|.*\|.*\|/m, emoji: 'Pin' },                       // table
-  { patterns: /^\s*(\d+\.|[-*])\s/m, emoji: 'JIAYI' },             // structured list
+  { patterns: /\|.*\|.*\|/m, emoji: 'SMART' },                     // table → smart
+  { patterns: /^\s*(\d+\.|[-*])\s/m, emoji: 'APPLAUSE' },          // structured list → applause
 ];
 
-/** Pick Phase 1 emoji. Returns null if no strong match (skip rather than force). */
+/** Pick Phase 1 emoji. Returns null only for very short ambiguous input. */
 function pickPhase1Emoji(text: string): string | null {
   for (const rule of PHASE1_RULES) {
     if (rule.patterns.test(text)) return rule.emoji;
   }
-  // Long messages suggest deep thinking; short/simple ones → skip
-  return text.length > 200 ? 'THINKING' : null;
+  // Fallback: any substantial message gets THINKING; only very short/ambiguous → skip
+  if (text.length > 5) return 'THINKING';
+  return null;
 }
 
 /** Pick Phase 2 emojis from response text. Returns 0-2 emojis (better-to-have). */
@@ -373,25 +375,27 @@ export class FeishuAdapter extends BaseChannelAdapter {
     const messageId = this.lastIncomingMessageId.get(chatId);
     if (!messageId || !this.restClient) return;
 
-    // Remove Phase 1 emoji
     const phase1ReactionId = this.typingReactions.get(chatId);
     this.typingReactions.delete(chatId);
-    if (phase1ReactionId) {
-      this.restClient.im.messageReaction.delete({
-        path: { message_id: messageId, reaction_id: phase1ReactionId },
-      }).catch(() => { /* ignore */ });
-    }
 
-    // Add Phase 2 emojis (fire-and-forget)
-    if (responseText) {
-      const emojis = pickPhase2Emojis(inboundText || '', responseText);
-      for (const emoji of emojis) {
+    // Pick Phase 2 emojis from response content
+    const phase2Emojis = responseText ? pickPhase2Emojis(inboundText || '', responseText) : [];
+
+    if (phase2Emojis.length > 0) {
+      // Phase 2 matched — remove Phase 1, add Phase 2 summary emojis
+      if (phase1ReactionId) {
+        this.restClient.im.messageReaction.delete({
+          path: { message_id: messageId, reaction_id: phase1ReactionId },
+        }).catch(() => { /* ignore */ });
+      }
+      for (const emoji of phase2Emojis) {
         this.restClient.im.messageReaction.create({
           path: { message_id: messageId },
           data: { reaction_type: { emoji_type: emoji } },
         }).catch(() => { /* non-critical */ });
       }
     }
+    // Phase 2 has no match — keep Phase 1 emoji as-is (don't remove)
   }
 
   // ── Streaming preview ────────────────────────────────────────
@@ -409,7 +413,11 @@ export class FeishuAdapter extends BaseChannelAdapter {
   async sendPreview(chatId: string, text: string, _draftId: number): Promise<'sent' | 'skip' | 'degrade'> {
     if (!this.restClient) return 'skip';
 
-    // Track this call so endPreview can await it before deleting
+    // Serialize: await any in-flight sendPreview to prevent duplicate card creation.
+    // Without this, two concurrent calls both see previewMessages=empty and both create cards.
+    const prev = this.previewPending.get(chatId);
+    if (prev) await prev.catch(() => {});
+
     const result = this._doSendPreview(chatId, text);
     this.previewPending.set(chatId, result.then(() => {}));
     return result;
