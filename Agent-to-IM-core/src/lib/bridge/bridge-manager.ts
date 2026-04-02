@@ -28,6 +28,7 @@ import {
   sanitizeInput,
   validateMode,
 } from './security/validators';
+import { collectGitSummary, formatGitSummary, formatDuration } from './git-summary.js';
 
 const GLOBAL_KEY = '__bridge_manager__';
 
@@ -575,6 +576,8 @@ async function executeBoundTask(
     taskStore?.updateTask(task.id, { status: 'running' });
   }
 
+  const taskStartedAt = Date.now();
+
   // ── Streaming preview setup ──────────────────────────────────
   let previewState: StreamingPreviewState | null = null;
   const caps = adapter.getPreviewCapabilities?.(msg.address.chatId) ?? null;
@@ -738,7 +741,26 @@ async function executeBoundTask(
         endInFlightUi(result.responseText);
       } else {
         endInFlightUi();
-        await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+        const deliverResult = await deliverResponse(adapter, msg.address, result.responseText, binding.codepilotSessionId);
+        // ── Graceful degradation: notify user if delivery failed ──
+        if (!deliverResult.ok) {
+          console.warn(
+            `[bridge-manager] Response delivery failed for ${adapter.channelType}/${msg.address.chatId}: ${deliverResult.error}`,
+          );
+          store.insertAuditLog({
+            channelType: adapter.channelType,
+            chatId: msg.address.chatId,
+            direction: 'outbound',
+            messageId: msg.messageId,
+            summary: `[DELIVERY_FAILED] ${deliverResult.error || 'unknown error'}`,
+          });
+          // Last-resort plain text notice
+          await deliver(adapter, {
+            address: msg.address,
+            text: `⚠ Response delivery failed (${deliverResult.error || 'unknown'}). Task completed but full response could not be sent.`,
+            parseMode: 'plain',
+          }).catch(() => { /* truly unreachable — give up silently */ });
+        }
       }
       if (getBridgeExtensions().wantsVoiceReply?.(input.rawText)) {
         const voiceReply = await getBridgeExtensions().prepareVoiceReply?.(result.responseText);
@@ -808,6 +830,25 @@ async function executeBoundTask(
       if (input.resumedFromTaskId) {
         taskStore?.updateTask(input.resumedFromTaskId, { status: 'resumed' });
       }
+
+      // ── Task completion summary (duration + git status) ──
+      try {
+        const elapsed = formatDuration(Date.now() - taskStartedAt);
+        let summaryLine = `✓ Task completed · ${elapsed}`;
+
+        if (binding.workingDirectory) {
+          const git = await collectGitSummary(binding.workingDirectory);
+          if (git) {
+            summaryLine += `\n  ${formatGitSummary(git)}`;
+          }
+        }
+
+        await deliver(adapter, {
+          address: msg.address,
+          text: summaryLine,
+          parseMode: 'plain',
+        }, { sessionId: binding.codepilotSessionId });
+      } catch { /* best effort — don't fail the task for a summary */ }
     }
   } catch (err) {
     const snapshotPath = createDiagnosticSnapshot('task_exception', {
