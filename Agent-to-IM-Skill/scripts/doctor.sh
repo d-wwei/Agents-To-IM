@@ -273,13 +273,13 @@ if [ "$CTI_RUNTIME" = "codex" ] || [ "$CTI_RUNTIME" = "auto" ]; then
   fi
 
   # Check Codex auth: any of CTI_CODEX_API_KEY / CODEX_API_KEY / OPENAI_API_KEY,
-  # or `codex login status` showing logged-in (interactive login).
+  # or `codex auth status` showing logged-in (interactive login).
   CODEX_AUTH=1
   if [ -n "${CTI_CODEX_API_KEY:-}" ] || [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
     CODEX_AUTH=0
   elif command -v codex &>/dev/null; then
-    CODEX_AUTH_OUT=$(codex login status 2>&1 || true)
-    if echo "$CODEX_AUTH_OUT" | grep -qiE 'logged in|authenticated'; then
+    CODEX_AUTH_OUT=$(codex auth status 2>&1 || true)
+    if echo "$CODEX_AUTH_OUT" | grep -qiE 'logged.in|authenticated'; then
       CODEX_AUTH=0
     fi
   fi
