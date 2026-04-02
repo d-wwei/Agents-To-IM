@@ -18,7 +18,7 @@ import type { LLMProvider } from 'agent-to-im-core/src/lib/bridge/host.js';
 import { loadConfig, configToSettings, CTI_HOME, HOST_PROFILE } from './config.js';
 import type { Config } from './config.js';
 import { JsonFileStore } from './store.js';
-import { SDKLLMProvider, resolveClaudeCliPath, resolveGeminiCliPath, preflightCheck } from './llm-provider.js';
+import { SDKLLMProvider, resolveClaudeCliPath, resolveGeminiCliPath, preflightCheck, generateCliWrapper } from './llm-provider.js';
 import { GeminiProvider } from './gemini-provider.js';
 import { PendingPermissions } from './permission-gateway.js';
 import { RetryingLLMProvider } from './retry-provider.js';
@@ -69,8 +69,14 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
       // Auto mode: preflight the resolved CLI before committing to it.
       const check = preflightCheck(claudePath);
       if (check.ok) {
-        console.log(`[${LOG_PREFIX}] Auto: using Claude CLI at ${claudePath} (${check.version})`);
-        return new SDKLLMProvider(pendingPerms, claudePath, config.autoApprove);
+        let effectiveCliPath = claudePath;
+        if (check.pollution) {
+          const suppressList = (process.env.CTI_CLI_SUPPRESS_STDOUT || check.pollution).split(',').map(s => s.trim());
+          effectiveCliPath = generateCliWrapper(claudePath, suppressList);
+          console.log(`[${LOG_PREFIX}] CLI stdout pollution detected ("${check.pollution}"), using wrapper: ${effectiveCliPath}`);
+        }
+        console.log(`[${LOG_PREFIX}] Auto: using Claude CLI at ${effectiveCliPath} (${check.version})`);
+        return new SDKLLMProvider(pendingPerms, effectiveCliPath, config.autoApprove);
       }
       // Preflight failed — fall through to Codex instead of silently using a broken CLI
       console.warn(
@@ -101,7 +107,14 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
   // defer the error to the first user message, which is harder to diagnose.
   const check = preflightCheck(cliPath);
   if (check.ok) {
-    console.log(`[${LOG_PREFIX}] CLI preflight OK: ${cliPath} (${check.version})`);
+    let effectiveCliPath = cliPath;
+    if (check.pollution) {
+      const suppressList = (process.env.CTI_CLI_SUPPRESS_STDOUT || check.pollution).split(',').map(s => s.trim());
+      effectiveCliPath = generateCliWrapper(cliPath, suppressList);
+      console.log(`[${LOG_PREFIX}] CLI stdout pollution detected ("${check.pollution}"), using wrapper: ${effectiveCliPath}`);
+    }
+    console.log(`[${LOG_PREFIX}] CLI preflight OK: ${effectiveCliPath} (${check.version})`);
+    return new SDKLLMProvider(pendingPerms, effectiveCliPath, config.autoApprove);
   } else {
     const msg = `[${LOG_PREFIX}] FATAL: Claude CLI preflight check failed.\n` +
       `  Path: ${cliPath}\n` +
@@ -114,7 +127,6 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
     console.error(msg);
     process.exit(1);
   }
-  return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
 }
 
 interface StatusInfo {

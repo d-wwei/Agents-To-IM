@@ -55,6 +55,28 @@
 3. If the issue persists, check how many concurrent sessions are active -- each host-agent session consumes memory
 4. Review logs for error loops that may cause memory leaks
 
+## CLI output was not valid JSON
+
+**Symptom:** Error in logs:
+```
+SDK query error: Error: CLI output was not valid JSON. This may indicate an error during startup. Output: init done
+```
+
+**Cause:** Some custom Claude CLI builds (e.g., enterprise proxy wrappers) print non-JSON text to stdout during initialization. The Claude Agent SDK expects pure JSON on stdout, so any extra output corrupts the communication.
+
+**Auto-fix:** Since v0.1.x, the bridge automatically detects stdout pollution during preflight and generates a wrapper script that suppresses it. Check the logs for:
+```
+CLI stdout pollution detected ("init done"), using wrapper: ~/.claude-to-im/cli-wrapper.sh
+```
+
+**Manual fix:** If auto-detection doesn't work, set `CTI_CLI_SUPPRESS_STDOUT` in your `config.env`:
+```
+CTI_CLI_SUPPRESS_STDOUT=init done
+```
+Multiple patterns can be comma-separated.
+
+**Alternative:** Create a manual wrapper script. See the generated `~/.claude-to-im/cli-wrapper.sh` for an example.
+
 ## Stale PID file
 
 **Symptoms**: Status shows "running" but the process doesn't exist, or start refuses because it thinks a daemon is already running.
