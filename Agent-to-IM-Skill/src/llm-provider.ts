@@ -702,6 +702,9 @@ export class SDKLLMProvider implements LLMProvider {
   constructor(private pendingPerms: PendingPermissions, cliPath?: string, autoApprove = false) {
     this.cliPath = cliPath;
     this.autoApprove = autoApprove;
+    if (autoApprove) {
+      console.warn('[llm-provider] ⚠ CTI_AUTO_APPROVE is enabled — all tool permissions will be auto-approved');
+    }
   }
 
   /** Disable V2 session pooling entirely (force V1-only). */
@@ -733,6 +736,7 @@ export class SDKLLMProvider implements LLMProvider {
         opts: { toolUseID: string; suggestions?: string[] },
       ): Promise<PermissionResult> => {
         if (autoApprove) {
+          console.warn(`[llm-provider] [AUTO_APPROVED] tool=${toolName} id=${opts.toolUseID}`);
           return { behavior: 'allow' as const, updatedInput: input };
         }
         const ctrl = activeControllers.get(sdkSessionId);
@@ -967,6 +971,7 @@ export class SDKLLMProvider implements LLMProvider {
                   // Auto-approve if configured (useful for channels without
                   // interactive permission UI, e.g. Feishu WebSocket mode)
                   if (autoApprove) {
+                    console.warn(`[llm-provider] [AUTO_APPROVED] tool=${toolName} id=${opts.toolUseID}`);
                     return { behavior: 'allow' as const, updatedInput: input };
                   }
 
