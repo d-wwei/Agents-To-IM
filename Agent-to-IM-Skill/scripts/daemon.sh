@@ -133,8 +133,11 @@ case "$(uname -s)" in
     echo "Windows detected. Delegating to supervisor-windows.ps1..."
     _CMD="${1:-help}"
     _LOGLINES="${2:-50}"
+    # Convert Unix-style path (/c/Users/...) to Windows format (C:/Users/...)
+    # so powershell.exe can locate the script.
+    _WIN_SKILL_DIR=$(cygpath -m "$SKILL_DIR" 2>/dev/null || echo "$SKILL_DIR" | sed 's|^/\([a-zA-Z]\)/|\1:/|')
     powershell.exe -ExecutionPolicy Bypass -Command \
-      "& '${SKILL_DIR}/scripts/supervisor-windows.ps1' -Command '${_CMD}' -LogLines ${_LOGLINES}"
+      "& '${_WIN_SKILL_DIR}/scripts/supervisor-windows.ps1' -Command '${_CMD}' -LogLines ${_LOGLINES}"
     exit $?
     ;;
   *)
