@@ -310,32 +310,33 @@ switch ($Command) {
         if ($svc) {
             Write-Host "Starting bridge via Windows Service..."
             Start-Service -Name $ServiceName
-            Start-Sleep -Seconds 3
-
-            $newPid = Read-Pid
-            if ($newPid -and (Test-PidAlive $newPid) -and (Test-StatusRunning)) {
-                Write-Host "Bridge started (PID: $newPid, managed by Windows Service)"
-                if (Test-Path $StatusFile) { Get-Content $StatusFile -Raw }
-            } else {
-                Write-Host "Failed to start bridge via service."
-                Show-LastExitReason
-                Show-FailureHelp
-                exit 1
-            }
         } else {
             Write-Host "Starting bridge (background process)..."
             $bridgePid = Start-Fallback
-            Start-Sleep -Seconds 3
+        }
 
+        # Poll for up to 30 seconds — CLI preflight + adapter handshake can take 15-20s
+        $started = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-StatusRunning) { $started = $true; break }
+            $checkPid = Read-Pid
+            if ($checkPid -and -not (Test-PidAlive $checkPid)) { break }
+        }
+
+        if ($started) {
             $newPid = Read-Pid
-            if ($newPid -and (Test-PidAlive $newPid) -and (Test-StatusRunning)) {
-                Write-Host "Bridge started (PID: $newPid)"
-                if (Test-Path $StatusFile) { Get-Content $StatusFile -Raw }
+            $via = if ($svc) { ', managed by Windows Service' } else { '' }
+            Write-Host "Bridge started (PID: $newPid$via)"
+            if (Test-Path $StatusFile) { Get-Content $StatusFile -Raw }
+        } else {
+            $newPid = Read-Pid
+            if ($newPid -and (Test-PidAlive $newPid)) {
+                Write-Host "Bridge is still starting (PID: $newPid) - check status in a few seconds:"
+                Write-Host "  powershell -File `"$PSCommandPath`" status"
             } else {
                 Write-Host "Failed to start bridge."
-                if (-not $newPid -or -not (Test-PidAlive $newPid)) {
-                    Write-Host "  Process exited immediately."
-                }
+                Write-Host "  Process not running."
                 Show-LastExitReason
                 Show-FailureHelp
                 exit 1

@@ -169,9 +169,10 @@ case "${1:-help}" in
     echo "Starting bridge..."
     supervisor_start
 
-    # Poll for up to 10 seconds waiting for status.json to report running
+    # Poll for up to 30 seconds waiting for status.json to report running.
+    # CLI preflight + adapter handshake can take 15-20s on first start.
     STARTED=false
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 30); do
       sleep 1
       if status_running; then
         STARTED=true
@@ -188,12 +189,18 @@ case "${1:-help}" in
       echo "Bridge started${NEW_PID:+ (PID: $NEW_PID)}"
       cat "$STATUS_FILE" 2>/dev/null
     else
-      echo "Failed to start bridge."
-      supervisor_is_running || echo "  Process not running."
-      status_running || echo "  status.json not reporting running=true."
-      show_last_exit_reason
-      show_failure_help
-      exit 1
+      # Process still alive but not yet reporting running — likely slow init
+      if supervisor_is_running; then
+        NEW_PID=$(read_pid)
+        echo "Bridge is still starting${NEW_PID:+ (PID: $NEW_PID)} — check status in a few seconds:"
+        echo "  bash \"$SKILL_DIR/scripts/daemon.sh\" status"
+      else
+        echo "Failed to start bridge."
+        echo "  Process not running."
+        show_last_exit_reason
+        show_failure_help
+        exit 1
+      fi
     fi
     ;;
 
