@@ -30,7 +30,6 @@
   "files": ["dist", "src/lib"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test --import tsx --test-timeout=15000 src/__tests__/unit/bridge-*.test.ts",
     "test": "npm run typecheck && npm run test:unit",

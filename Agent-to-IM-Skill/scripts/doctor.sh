@@ -316,11 +316,16 @@ fi
 
 # --- config.env permissions ---
 if [ -f "$CONFIG_FILE" ]; then
-  PERMS=$(stat -f "%Lp" "$CONFIG_FILE" 2>/dev/null || stat -c "%a" "$CONFIG_FILE" 2>/dev/null || echo "unknown")
-  if [ "$PERMS" = "600" ]; then
-    check "config.env permissions are 600" 0
+  # Windows/NTFS does not support Unix file permissions — skip check
+  if [ -n "$MSYSTEM" ] || uname -s 2>/dev/null | grep -Eqi 'mingw|msys|cygwin'; then
+    check "config.env permissions (skipped on Windows)" 0
   else
-    check "config.env permissions are 600 (currently $PERMS)" 1
+    PERMS=$(stat -f "%Lp" "$CONFIG_FILE" 2>/dev/null || stat -c "%a" "$CONFIG_FILE" 2>/dev/null || echo "unknown")
+    if [ "$PERMS" = "600" ]; then
+      check "config.env permissions are 600" 0
+    else
+      check "config.env permissions are 600 (currently $PERMS)" 1
+    fi
   fi
 fi
 

@@ -161,6 +161,9 @@ case "${1:-help}" in
       exit 1
     fi
 
+    # Clean up stale runtime files from previous runs
+    rm -f "$PID_FILE" "$STATUS_FILE"
+
     # Source config.env BEFORE clean_env so that CTI_ANTHROPIC_PASSTHROUGH
     # and other CTI_* flags are available when clean_env checks them.
     [ -f "$CTI_HOME/config.env" ] && set -a && source "$CTI_HOME/config.env" && set +a
@@ -208,6 +211,7 @@ case "${1:-help}" in
     if supervisor_is_managed; then
       echo "Stopping bridge..."
       supervisor_stop
+      rm -f "$STATUS_FILE"
       echo "Bridge stopped"
     else
       PID=$(read_pid)
@@ -223,7 +227,7 @@ case "${1:-help}" in
       else
         echo "Bridge was not running (stale PID file)"
       fi
-      rm -f "$PID_FILE"
+      rm -f "$PID_FILE" "$STATUS_FILE"
     fi
     ;;
 

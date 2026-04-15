@@ -5,3 +5,7 @@ dist/
 .assistant/
 .claude/
 runtime/
+
+# Agent Recall data
+.agent-recall/
+.apex/

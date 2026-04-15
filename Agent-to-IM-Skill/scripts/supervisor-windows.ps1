@@ -254,7 +254,8 @@ function Start-Fallback {
 
     # ── Smoke test: verify daemon.mjs can at least be parsed by Node ──
     try {
-        $smokeResult = & $nodePath -e "require('$($DaemonMjs.Replace('\','/'))')" 2>&1
+        # Use --check for syntax validation — require() cannot load ESM .mjs files
+        $smokeResult = & $nodePath --check $DaemonMjs 2>&1
     } catch {
         # Non-fatal: smoke test failure is logged but we still attempt to start
         Write-Host "  Warning: smoke test failed: $_"
@@ -267,7 +268,7 @@ function Start-Fallback {
     $spawnFix = Join-Path (Join-Path $SkillDir 'scripts') 'spawn-fix.cjs'
     if (Test-Path $spawnFix) {
         $existing = [System.Environment]::GetEnvironmentVariable('NODE_OPTIONS')
-        $requireFlag = "--require `"$spawnFix`""
+        $requireFlag = "--require `"$($spawnFix.Replace('\', '/'))`""
         if (-not $existing -or $existing -notlike "*spawn-fix*") {
             $newVal = if ($existing) { "$existing $requireFlag" } else { $requireFlag }
             [System.Environment]::SetEnvironmentVariable('NODE_OPTIONS', $newVal)
@@ -304,6 +305,10 @@ switch ($Command) {
             if (Test-Path $StatusFile) { Get-Content $StatusFile -Raw }
             exit 1
         }
+
+        # Clean up stale runtime files from previous runs
+        if (Test-Path $PidFile) { Remove-Item $PidFile -Force }
+        if (Test-Path $StatusFile) { Remove-Item $StatusFile -Force }
 
         # Check if registered as Windows Service
         $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -351,6 +356,7 @@ switch ($Command) {
             Stop-Service -Name $ServiceName -Force
             Write-Host "Bridge stopped"
             if (Test-Path $PidFile) { Remove-Item $PidFile -Force }
+            if (Test-Path $StatusFile) { Remove-Item $StatusFile -Force }
         } else {
             $bridgePid = Read-Pid
             if (-not $bridgePid) { Write-Host "No bridge running"; exit 0 }
@@ -361,6 +367,7 @@ switch ($Command) {
                 Write-Host "Bridge was not running (stale PID file)"
             }
             if (Test-Path $PidFile) { Remove-Item $PidFile -Force }
+            if (Test-Path $StatusFile) { Remove-Item $StatusFile -Force }
         }
     }
 
